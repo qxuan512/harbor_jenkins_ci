@@ -1,7 +1,7 @@
 pipeline {
     agent {
         kubernetes {
-            yamlFile 'kaniko-builder.yaml'
+            yamlFile 'kaniko-builder-harbor.yaml'
         }
     }
 
@@ -40,7 +40,7 @@ pipeline {
             steps {
                 script {
                     // 从 SCM 检出代码
-                    git branch: 'main', credentialsId: 'github', url: 'https://github.com/dmancloud/complete-prodcution-e2e-pipeline'
+                    git branch: 'master', credentialsId: 'github', url: 'https://github.com/qxuan512/harbor_jenkins_ci.git'
                     
                     echo "✅ 代码检出完成"
                     echo "构建上下文: ${BUILD_CONTEXT_PATH}"
