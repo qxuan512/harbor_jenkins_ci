@@ -14,6 +14,8 @@ spec:
     env:
     - name: DOCKER_CONFIG
       value: /kaniko/.docker
+    - name: KANIKO_INSECURE_REGISTRIES
+      value: "registry.test.shifu.dev"
   volumes:
   - name: jenkins-docker-cfg
     projected:
