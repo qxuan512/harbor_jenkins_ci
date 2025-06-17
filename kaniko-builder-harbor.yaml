@@ -16,6 +16,10 @@ spec:
       value: /kaniko/.docker
     - name: KANIKO_INSECURE_REGISTRIES
       value: "registry.test.shifu.dev"
+    - name: KANIKO_INSECURE
+      value: "true"
+    - name: KANIKO_SKIP_TLS_VERIFY
+      value: "true"
   volumes:
   - name: jenkins-docker-cfg
     projected:
@@ -24,4 +28,4 @@ spec:
           name: harbor-credentials
           items:
             - key: .dockerconfigjson
-              path: config.json 
+              path: config.json
