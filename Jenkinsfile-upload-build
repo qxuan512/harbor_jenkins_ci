@@ -11,6 +11,8 @@ pipeline {
         string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
         string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
         choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
+        // 添加文件上传参数
+        stashedFile(name: 'BUILD_ARCHIVE', description: '上传包含构建上下文的压缩文件 (支持 .zip, .tar, .tar.gz)')
     }
 
     environment {
@@ -36,28 +38,77 @@ pipeline {
             }
         }
 
-        stage("获取源代码") {
+        stage("处理上传文件") {
             steps {
                 script {
-                    // 从 SCM 检出代码
-                    git branch: 'master', credentialsId: 'github', url: 'https://github.com/qxuan512/harbor_jenkins_ci.git'
+                    echo "📦 开始处理上传的构建文件"
                     
-                    echo "✅ 代码检出完成"
-                    echo "构建上下文: ${BUILD_CONTEXT_PATH}"
-                    echo "Dockerfile 路径: ${DOCKERFILE_PATH}"
+                    // 获取上传文件的原始文件名
+                    def originalFilename = env.BUILD_ARCHIVE_FILENAME
+                    echo "上传文件名: ${originalFilename}"
+                    
+                    // 从 stash 中恢复上传的文件
+                    unstash 'BUILD_ARCHIVE'
+                    
+                    // 重命名为原始文件名
+                    sh """
+                        if [ -n "\${BUILD_ARCHIVE_FILENAME}" ]; then
+                            mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
+                            echo "✅ 文件已重命名为: \${BUILD_ARCHIVE_FILENAME}"
+                        else
+                            echo "⚠️  使用默认文件名: BUILD_ARCHIVE"
+                        fi
+                    """
+                    
+                    // 检测文件类型并解压
+                    sh """
+                        # 获取实际文件名
+                        ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME:-BUILD_ARCHIVE}"
+                        
+                        # 显示文件信息
+                        echo "📋 文件信息:"
+                        ls -lh "\$ARCHIVE_FILE"
+                        file "\$ARCHIVE_FILE"
+                        
+                        # 根据文件扩展名解压
+                        echo "📂 开始解压文件..."
+                        if [[ "\$ARCHIVE_FILE" == *.zip ]]; then
+                            echo "检测到 ZIP 文件，使用 unzip 解压"
+                            unzip -q "\$ARCHIVE_FILE"
+                        elif [[ "\$ARCHIVE_FILE" == *.tar.gz ]] || [[ "\$ARCHIVE_FILE" == *.tgz ]]; then
+                            echo "检测到 TAR.GZ 文件，使用 tar 解压"
+                            tar -xzf "\$ARCHIVE_FILE"
+                        elif [[ "\$ARCHIVE_FILE" == *.tar ]]; then
+                            echo "检测到 TAR 文件，使用 tar 解压"
+                            tar -xf "\$ARCHIVE_FILE"
+                        else
+                            echo "❌ 不支持的文件格式: \$ARCHIVE_FILE"
+                            echo "支持的格式: .zip, .tar, .tar.gz, .tgz"
+                            exit 1
+                        fi
+                        
+                        echo "✅ 文件解压完成"
+                        echo "📁 工作空间内容:"
+                        ls -la
+                    """
                     
                     // 验证构建目录和文件是否存在
                     sh """
                         if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
                             echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
+                            echo "📁 当前目录内容:"
+                            find . -type d -maxdepth 2
                             exit 1
                         fi
                         
                         if [ ! -f "${DOCKERFILE_PATH}" ]; then
                             echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
+                            echo "📁 构建目录内容:"
+                            ls -la ${BUILD_CONTEXT_PATH}/
                             exit 1
                         fi
                         
+                        echo "✅ 构建文件验证通过"
                         echo "📁 构建目录内容:"
                         ls -la ${BUILD_CONTEXT_PATH}/
                     """
@@ -83,6 +134,7 @@ pipeline {
                         echo "构建时间: \$(date)"
                         echo "构建节点: \$(hostname)"
                         echo "Jenkins URL: ${JENKINS_URL}"
+                        echo "上传文件: \${BUILD_ARCHIVE_FILENAME:-BUILD_ARCHIVE}"
                     """
                 }
             }
