@@ -1,0 +1,185 @@
+pipeline {
+    agent {
+        kubernetes {
+            yamlFile 'kaniko-builder.yaml'
+        }
+    }
+
+    parameters {
+        // 允许外部程序通过参数触发构建
+        string(name: 'APP_NAME', defaultValue: 'iot-driver', description: '应用名称')
+        string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
+        string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
+        choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
+    }
+
+    environment {
+        // Harbor 仓库配置
+        HARBOR_REGISTRY = "registry.test.shifu.dev"
+        HARBOR_PROJECT = "test-project"
+        DOCKER_USER = "admin"
+        DOCKER_PASS = 'harbor-credentials'  // Jenkins 凭据 ID
+        
+        // 镜像配置
+        IMAGE_NAME = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${params.APP_NAME}"
+        IMAGE_TAG = generateImageTag()
+        
+        // 构建配置
+        DOCKERFILE_PATH = "${params.BUILD_CONTEXT}/Dockerfile"
+        BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
+    }
+
+    stages {
+        stage("清理工作空间") {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage("获取源代码") {
+            steps {
+                script {
+                    // 从 SCM 检出代码
+                    git branch: 'main', credentialsId: 'github', url: 'https://github.com/dmancloud/complete-prodcution-e2e-pipeline'
+                    
+                    echo "✅ 代码检出完成"
+                    echo "构建上下文: ${BUILD_CONTEXT_PATH}"
+                    echo "Dockerfile 路径: ${DOCKERFILE_PATH}"
+                    
+                    // 验证构建目录和文件是否存在
+                    sh """
+                        if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
+                            echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
+                            exit 1
+                        fi
+                        
+                        if [ ! -f "${DOCKERFILE_PATH}" ]; then
+                            echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
+                            exit 1
+                        fi
+                        
+                        echo "📁 构建目录内容:"
+                        ls -la ${BUILD_CONTEXT_PATH}/
+                    """
+                }
+            }
+        }
+
+        stage("构建准备") {
+            steps {
+                script {
+                    echo "🔧 构建准备阶段"
+                    echo "应用名称: ${params.APP_NAME}"
+                    echo "应用版本: ${params.APP_VERSION}" 
+                    echo "镜像名称: ${IMAGE_NAME}"
+                    echo "镜像标签: ${IMAGE_TAG}"
+                    echo "Harbor 仓库: ${HARBOR_REGISTRY}"
+                    echo "项目: ${HARBOR_PROJECT}"
+                    
+                    // 显示构建信息
+                    sh """
+                        echo "=== 构建信息 ==="
+                        echo "构建号: ${BUILD_NUMBER}"
+                        echo "构建时间: \$(date)"
+                        echo "构建节点: \$(hostname)"
+                        echo "Jenkins URL: ${JENKINS_URL}"
+                    """
+                }
+            }
+        }
+
+        stage("使用 Kaniko 构建并推送镜像") {
+            steps {
+                container(name: 'kaniko', shell: '/busybox/sh') {
+                    sh '''#!/busybox/sh
+                        echo "🚀 开始使用 Kaniko 构建 Docker 镜像"
+                        
+                        # 显示 Kaniko 版本
+                        /kaniko/executor version
+                        
+                        # 显示构建上下文
+                        echo "📂 构建上下文内容:"
+                        ls -la ${BUILD_CONTEXT_PATH}/
+                        
+                        # 执行镜像构建和推送
+                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        
+                        /kaniko/executor \\
+                            --dockerfile=${DOCKERFILE_PATH} \\
+                            --context=${BUILD_CONTEXT_PATH} \\
+                            --destination=${IMAGE_NAME}:${IMAGE_TAG} \\
+                            --destination=${IMAGE_NAME}:latest \\
+                            --cache=true \\
+                            --cache-ttl=24h \\
+                            --cleanup
+                        
+                        echo "✅ 镜像构建并推送完成"
+                        echo "📦 推送的镜像:"
+                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "   - ${IMAGE_NAME}:latest"
+                    '''
+                }
+            }
+        }
+
+        stage("验证镜像推送") {
+            steps {
+                script {
+                    echo "🔍 验证镜像是否成功推送到 Harbor"
+                    
+                    // 这里可以添加验证逻辑，比如调用 Harbor API 检查镜像是否存在
+                    sh """
+                        echo "镜像推送验证:"
+                        echo "仓库地址: ${HARBOR_REGISTRY}"
+                        echo "项目: ${HARBOR_PROJECT}"
+                        echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}"
+                        
+                        # 可以添加 Harbor API 调用来验证镜像
+                        # curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                echo "🧹 清理构建环境"
+            }
+        }
+        success {
+            script {
+                echo "🎉 构建成功!"
+                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG}"
+                
+                // 可以在这里添加成功通知，比如发送到企业微信、钉钉等
+                // notifySuccess()
+            }
+        }
+        failure {
+            script {
+                echo "❌ 构建失败!"
+                
+                // 可以在这里添加失败通知
+                // notifyFailure()
+            }
+        }
+    }
+}
+
+// 生成镜像标签的函数
+def generateImageTag() {
+    def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build'
+    
+    switch(strategy) {
+        case 'version-build':
+            return "${params.APP_VERSION}-${BUILD_NUMBER}"
+        case 'timestamp':
+            return "${params.APP_VERSION}-${new Date().format('yyyyMMdd-HHmmss')}"
+        case 'latest':
+            return 'latest'
+        default:
+            return "${params.APP_VERSION}-${BUILD_NUMBER}"
+    }
+} 

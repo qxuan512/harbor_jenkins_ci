@@ -1,0 +1,13 @@
+# Jenkins 触发脚本依赖
+
+# python-jenkins 库，用于与 Jenkins REST API 交互
+python-jenkins>=1.8.0
+
+# requests 库，作为 python-jenkins 的依赖
+requests>=2.25.0
+
+# 可选：用于更好的输出格式
+colorama>=0.4.4
+
+# 可选：用于配置文件处理
+python-dotenv>=0.19.0 
