@@ -99,79 +99,79 @@ pipeline {
                     
                     // 检测文件类型并解压 - 使用 Jenkins 内置功能
                     script {
-                        def archiveFile = env.ACTUAL_ARCHIVE_FILE
+                        def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
                         
                         echo "📋 文件信息:"
-                        sh "ls -lh '${archiveFile}'"
+                        sh "ls -lh '${uploadedArchive}'"
                         
-                        echo "📂 开始解压文件: ${archiveFile}"
+                        echo "📂 开始解压文件: ${uploadedArchive}"
                         
                         // 根据文件扩展名选择解压方法
-                        if (archiveFile.endsWith('.zip')) {
+                        if (uploadedArchive.endsWith('.zip')) {
                             echo "检测到 ZIP 文件，使用 Jenkins 内置 unzip"
                             try {
                                 // 使用 Jenkins Pipeline Utility Steps 的 unzip 功能
-                                unzip zipFile: archiveFile, quiet: true
+                                unzip zipFile: uploadedArchive, quiet: true
                                 echo "✅ ZIP 文件解压完成"
                             } catch (Exception e) {
                                 echo "❌ Jenkins unzip 失败: ${e.getMessage()}"
                                 echo "尝试使用容器内的 tar 命令解压..."
                                 // 作为备选方案，尝试用 tar 解压 (某些系统 tar 支持 zip)
                                 sh """
-                                    if tar -tf '${archiveFile}' >/dev/null 2>&1; then
+                                    if tar -tf '${uploadedArchive}' >/dev/null 2>&1; then
                                         echo "使用 tar 解压 ZIP 文件"
-                                        tar -xf '${archiveFile}'
+                                        tar -xf '${uploadedArchive}'
                                     else
-                                        echo "❌ 无法解压文件: ${archiveFile}"
+                                        echo "❌ 无法解压文件: ${uploadedArchive}"
                                         exit 1
                                     fi
                                 """
                             }
-                        } else if (archiveFile.endsWith('.tar.gz') || archiveFile.endsWith('.tgz')) {
+                        } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
                             echo "检测到 TAR.GZ 文件，使用 Jenkins 内置 untar"
                             try {
                                 // 使用 Jenkins Pipeline Utility Steps 的 untar 功能
-                                untar file: archiveFile, compression: 'gzip'
+                                untar file: uploadedArchive, compression: 'gzip'
                                 echo "✅ TAR.GZ 文件解压完成"
                             } catch (Exception e) {
                                 echo "❌ Jenkins untar 失败: ${e.getMessage()}"
                                 echo "尝试使用容器内的 tar 命令..."
-                                sh "tar -xzf '${archiveFile}'"
+                                sh "tar -xzf '${uploadedArchive}'"
                             }
-                        } else if (archiveFile.endsWith('.tar')) {
+                        } else if (uploadedArchive.endsWith('.tar')) {
                             echo "检测到 TAR 文件，使用 Jenkins 内置 untar"
                             try {
                                 // 使用 Jenkins Pipeline Utility Steps 的 untar 功能
-                                untar file: archiveFile
+                                untar file: uploadedArchive
                                 echo "✅ TAR 文件解压完成"
                             } catch (Exception e) {
                                 echo "❌ Jenkins untar 失败: ${e.getMessage()}"
                                 echo "尝试使用容器内的 tar 命令..."
-                                sh "tar -xf '${archiveFile}'"
+                                sh "tar -xf '${uploadedArchive}'"
                             }
                         } else {
                             echo "⚠️  未知文件格式，尝试自动检测..."
                             // 默认尝试作为 ZIP 处理
                             try {
                                 echo "尝试作为 ZIP 文件解压"
-                                unzip zipFile: archiveFile, quiet: true
+                                unzip zipFile: uploadedArchive, quiet: true
                                 echo "✅ 按 ZIP 格式解压成功"
                             } catch (Exception e1) {
                                 echo "ZIP 解压失败，尝试作为 TAR.GZ 解压"
                                 try {
-                                    untar file: archiveFile, compression: 'gzip'
+                                    untar file: uploadedArchive, compression: 'gzip'
                                     echo "✅ 按 TAR.GZ 格式解压成功"
                                 } catch (Exception e2) {
                                     echo "TAR.GZ 解压失败，尝试作为 TAR 解压"
                                     try {
-                                        untar file: archiveFile
+                                        untar file: uploadedArchive
                                         echo "✅ 按 TAR 格式解压成功"
                                     } catch (Exception e3) {
                                         echo "❌ 所有解压方式都失败了"
                                         echo "ZIP 错误: ${e1.getMessage()}"
                                         echo "TAR.GZ 错误: ${e2.getMessage()}"
                                         echo "TAR 错误: ${e3.getMessage()}"
-                                        error("无法解压文件: ${archiveFile}")
+                                        error("无法解压文件: ${uploadedArchive}")
                                     }
                                 }
                             }
