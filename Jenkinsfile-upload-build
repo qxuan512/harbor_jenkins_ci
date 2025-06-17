@@ -97,7 +97,7 @@ pipeline {
                     
                     echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
                     
-                    // 检测文件类型并解压 - 使用 Jenkins 内置功能
+                    // 检测文件类型并解压 - 使用 Pipeline Utility Steps
                     script {
                         def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
                         
@@ -106,18 +106,46 @@ pipeline {
                         
                         echo "📂 开始解压文件: ${uploadedArchive}"
                         
-                        // 使用 Jenkins 内置的 unarchive 步骤
+                        // 根据文件扩展名使用适当的 Pipeline Utility Steps
                         try {
-                            echo "使用 Jenkins 内置 unarchive 解压文件"
-                            unarchive mapping: [:], file: uploadedArchive
-                            echo "✅ 文件解压完成"
-                        } catch (Exception e) {
-                            echo "❌ Jenkins unarchive 失败: ${e.getMessage()}"
-                            echo "尝试使用容器内命令解压..."
-                            
-                            // 根据文件扩展名使用适当的命令行工具
                             if (uploadedArchive.endsWith('.zip')) {
-                                echo "尝试使用 Python 解压 ZIP 文件"
+                                echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
+                                unzip zipFile: uploadedArchive, quiet: false
+                                echo "✅ ZIP 文件解压完成"
+                            } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
+                                echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
+                                untar file: uploadedArchive, compression: 'gzip', quiet: false
+                                echo "✅ TAR.GZ 文件解压完成"
+                            } else if (uploadedArchive.endsWith('.tar')) {
+                                echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
+                                untar file: uploadedArchive, quiet: false
+                                echo "✅ TAR 文件解压完成"
+                            } else {
+                                echo "⚠️  未知文件格式，尝试通用解压方法"
+                                // 先尝试作为 ZIP 文件
+                                try {
+                                    echo "尝试按 ZIP 格式解压"
+                                    unzip zipFile: uploadedArchive, quiet: false
+                                    echo "✅ 按 ZIP 格式解压成功"
+                                } catch (Exception zipEx) {
+                                    echo "ZIP 解压失败，尝试按 TAR 格式解压"
+                                    try {
+                                        untar file: uploadedArchive, quiet: false
+                                        echo "✅ 按 TAR 格式解压成功"
+                                    } catch (Exception tarEx) {
+                                        echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
+                                        untar file: uploadedArchive, compression: 'gzip', quiet: false
+                                        echo "✅ 按 TAR.GZ 格式解压成功"
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
+                            echo "回退到传统方法解压..."
+                            
+                            // 回退到传统命令行解压
+                            if (uploadedArchive.endsWith('.zip')) {
+                                echo "使用 Python 解压 ZIP 文件"
                                 sh '''
                                     python3 -c "
 import zipfile
@@ -137,48 +165,6 @@ except Exception as e:
                             } else if (uploadedArchive.endsWith('.tar')) {
                                 echo "使用 tar 解压 TAR 文件"
                                 sh "tar -xf '${uploadedArchive}'"
-                            } else {
-                                echo "尝试 Python 通用解压"
-                                sh '''
-                                    python3 -c "
-import zipfile
-import tarfile
-import sys
-
-archive_file = '${uploadedArchive}'
-print(f'尝试解压文件: {archive_file}')
-
-# 尝试 ZIP
-try:
-    with zipfile.ZipFile(archive_file, 'r') as zip_ref:
-        zip_ref.extractall('.')
-    print('✅ 按 ZIP 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-# 尝试 TAR.GZ
-try:
-    with tarfile.open(archive_file, 'r:gz') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR.GZ 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-# 尝试 TAR
-try:
-    with tarfile.open(archive_file, 'r') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-print('❌ 所有解压方式都失败了')
-sys.exit(1)
-                                    "
-                                '''
                             }
                         }
                         
