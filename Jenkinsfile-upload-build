@@ -50,41 +50,102 @@ pipeline {
                     // 从 stash 中恢复上传的文件
                     unstash 'BUILD_ARCHIVE'
                     
-                    // 重命名为原始文件名
+                    // 检查文件并确定实际文件名
                     sh """
-                        if [ -n "\${BUILD_ARCHIVE_FILENAME}" ]; then
-                            mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
-                            echo "✅ 文件已重命名为: \${BUILD_ARCHIVE_FILENAME}"
+                        echo "📋 检查上传文件信息..."
+                        ls -la BUILD_ARCHIVE* || true
+                        
+                        # 检查是否有原始文件名
+                        if [ -n "\${BUILD_ARCHIVE_FILENAME}" ] && [ "\${BUILD_ARCHIVE_FILENAME}" != "null" ]; then
+                            echo "✅ 使用原始文件名: \${BUILD_ARCHIVE_FILENAME}"
+                            if [ -f "BUILD_ARCHIVE" ]; then
+                                mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
+                            fi
+                            ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME}"
                         else
-                            echo "⚠️  使用默认文件名: BUILD_ARCHIVE"
+                            echo "⚠️  文件名为空或null，尝试检测文件类型"
+                            # 使用 file 命令检测文件类型
+                            FILE_TYPE=\$(file BUILD_ARCHIVE 2>/dev/null || echo "unknown")
+                            echo "文件类型检测: \$FILE_TYPE"
+                            
+                            if echo "\$FILE_TYPE" | grep -q "Zip archive"; then
+                                ARCHIVE_FILE="BUILD_ARCHIVE.zip"
+                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                echo "✅ 检测为ZIP文件，重命名为: \$ARCHIVE_FILE"
+                            elif echo "\$FILE_TYPE" | grep -q "gzip compressed"; then
+                                ARCHIVE_FILE="BUILD_ARCHIVE.tar.gz"
+                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                echo "✅ 检测为TAR.GZ文件，重命名为: \$ARCHIVE_FILE"
+                            elif echo "\$FILE_TYPE" | grep -q "POSIX tar archive"; then
+                                ARCHIVE_FILE="BUILD_ARCHIVE.tar"
+                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                echo "✅ 检测为TAR文件，重命名为: \$ARCHIVE_FILE"
+                            else
+                                ARCHIVE_FILE="BUILD_ARCHIVE"
+                                echo "⚠️  无法识别文件类型，使用默认名称: \$ARCHIVE_FILE"
+                            fi
                         fi
+                        
+                        echo "最终使用的文件名: \$ARCHIVE_FILE"
+                        echo "ARCHIVE_FILE=\$ARCHIVE_FILE" > archive_info.env
                     """
+                    
+                    // 读取文件名信息
+                    def archiveInfo = readFile('archive_info.env').trim()
+                    def archiveFile = archiveInfo.split('=')[1]
+                    env.ACTUAL_ARCHIVE_FILE = archiveFile
+                    
+                    echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
                     
                     // 检测文件类型并解压
                     sh """
-                        # 获取实际文件名
-                        ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME:-BUILD_ARCHIVE}"
+                        # 使用确定的文件名
+                        ARCHIVE_FILE="${env.ACTUAL_ARCHIVE_FILE}"
                         
                         # 显示文件信息
                         echo "📋 文件信息:"
                         ls -lh "\$ARCHIVE_FILE"
-                        file "\$ARCHIVE_FILE"
+                        file "\$ARCHIVE_FILE" || echo "file 命令不可用"
                         
-                        # 根据文件扩展名解压
+                        # 根据文件扩展名和内容解压
                         echo "📂 开始解压文件..."
-                        if [[ "\$ARCHIVE_FILE" == *.zip ]]; then
+                        
+                        # 首先尝试根据扩展名解压
+                        if [[ "\$ARCHIVE_FILE" == *.zip ]] || file "\$ARCHIVE_FILE" 2>/dev/null | grep -q "Zip archive"; then
                             echo "检测到 ZIP 文件，使用 unzip 解压"
-                            unzip -q "\$ARCHIVE_FILE"
-                        elif [[ "\$ARCHIVE_FILE" == *.tar.gz ]] || [[ "\$ARCHIVE_FILE" == *.tgz ]]; then
+                            if command -v unzip >/dev/null 2>&1; then
+                                unzip -q "\$ARCHIVE_FILE"
+                            else
+                                echo "❌ unzip 命令不可用"
+                                exit 1
+                            fi
+                        elif [[ "\$ARCHIVE_FILE" == *.tar.gz ]] || [[ "\$ARCHIVE_FILE" == *.tgz ]] || file "\$ARCHIVE_FILE" 2>/dev/null | grep -q "gzip compressed"; then
                             echo "检测到 TAR.GZ 文件，使用 tar 解压"
                             tar -xzf "\$ARCHIVE_FILE"
-                        elif [[ "\$ARCHIVE_FILE" == *.tar ]]; then
+                        elif [[ "\$ARCHIVE_FILE" == *.tar ]] || file "\$ARCHIVE_FILE" 2>/dev/null | grep -q "POSIX tar archive"; then
                             echo "检测到 TAR 文件，使用 tar 解压"
                             tar -xf "\$ARCHIVE_FILE"
                         else
-                            echo "❌ 不支持的文件格式: \$ARCHIVE_FILE"
-                            echo "支持的格式: .zip, .tar, .tar.gz, .tgz"
-                            exit 1
+                            echo "⚠️  无法识别文件格式，尝试所有可能的解压方式..."
+                            
+                            # 尝试 ZIP
+                            if unzip -t "\$ARCHIVE_FILE" >/dev/null 2>&1; then
+                                echo "文件是有效的 ZIP 格式，开始解压"
+                                unzip -q "\$ARCHIVE_FILE"
+                            # 尝试 TAR.GZ
+                            elif tar -tzf "\$ARCHIVE_FILE" >/dev/null 2>&1; then
+                                echo "文件是有效的 TAR.GZ 格式，开始解压"
+                                tar -xzf "\$ARCHIVE_FILE"
+                            # 尝试 TAR
+                            elif tar -tf "\$ARCHIVE_FILE" >/dev/null 2>&1; then
+                                echo "文件是有效的 TAR 格式，开始解压"
+                                tar -xf "\$ARCHIVE_FILE"
+                            else
+                                echo "❌ 无法解压文件: \$ARCHIVE_FILE"
+                                echo "支持的格式: .zip, .tar, .tar.gz, .tgz"
+                                echo "请检查文件是否损坏或格式不支持"
+                                exit 1
+                            fi
                         fi
                         
                         echo "✅ 文件解压完成"
@@ -134,7 +195,8 @@ pipeline {
                         echo "构建时间: \$(date)"
                         echo "构建节点: \$(hostname)"
                         echo "Jenkins URL: ${JENKINS_URL}"
-                        echo "上传文件: \${BUILD_ARCHIVE_FILENAME:-BUILD_ARCHIVE}"
+                        echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
+                        echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
                     """
                 }
             }
