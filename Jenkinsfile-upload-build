@@ -61,9 +61,9 @@ pipeline {
         DOCKERFILE_PATH = "${params.BUILD_CONTEXT}/Dockerfile"
         BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
         
-        // 唯一构建标识符（将在构建准备阶段生成）
-        UNIQUE_BUILD_ID = ""
-        IMAGE_TAG = ""
+        // 全局构建标识符（在所有阶段和容器中可用）
+        GLOBAL_UNIQUE_BUILD_ID = ""
+        GLOBAL_IMAGE_TAG = ""
     }
 
     stages {
@@ -246,12 +246,16 @@ except Exception as e:
                     def imageTag = generateImageTag(uniqueBuildId)
                     echo "✅ 镜像标签已生成: ${imageTag}"
                     
-                    // 设置环境变量（使用script块内的方式）
-                    env.UNIQUE_BUILD_ID = uniqueBuildId
-                    env.IMAGE_TAG = imageTag
+                    // 设置全局环境变量（在所有阶段和容器中可用）
+                    env.GLOBAL_UNIQUE_BUILD_ID = uniqueBuildId
+                    env.GLOBAL_IMAGE_TAG = imageTag
+                    env.UNIQUE_BUILD_ID = uniqueBuildId  // 保持向后兼容
+                    env.IMAGE_TAG = imageTag            // 保持向后兼容
                     
                     // 验证环境变量设置
                     echo "🔍 验证环境变量设置:"
+                    echo "   GLOBAL_UNIQUE_BUILD_ID = ${env.GLOBAL_UNIQUE_BUILD_ID}"
+                    echo "   GLOBAL_IMAGE_TAG = ${env.GLOBAL_IMAGE_TAG}"
                     echo "   UNIQUE_BUILD_ID = ${env.UNIQUE_BUILD_ID}"
                     echo "   IMAGE_TAG = ${env.IMAGE_TAG}"
                     
@@ -268,6 +272,8 @@ except Exception as e:
                 sh '''
                     echo "=== 构建信息 ==="
                     echo "Jenkins构建号: ${BUILD_NUMBER}"
+                    echo "全局唯一构建ID: ${GLOBAL_UNIQUE_BUILD_ID}"
+                    echo "全局镜像标签: ${GLOBAL_IMAGE_TAG}"
                     echo "唯一构建ID: ${UNIQUE_BUILD_ID}"
                     echo "镜像标签: ${IMAGE_TAG}"
                     echo "构建时间: $(date)"
@@ -287,6 +293,8 @@ except Exception as e:
                         echo "🚀 开始使用 Kaniko 构建 Docker 镜像"
                         echo "📋 构建标识信息:"
                         echo "   Jenkins构建号: ${BUILD_NUMBER}"
+                        echo "   全局唯一构建ID: ${GLOBAL_UNIQUE_BUILD_ID}"
+                        echo "   全局镜像标签: ${GLOBAL_IMAGE_TAG}"
                         echo "   唯一构建ID: ${UNIQUE_BUILD_ID}"
                         echo "   镜像标签: ${IMAGE_TAG}"
                         
@@ -297,13 +305,13 @@ except Exception as e:
                         echo "📂 构建上下文内容:"
                         ls -la ${BUILD_CONTEXT_PATH}/
                         
-                        # 执行镜像构建和推送
-                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        # 使用全局变量进行构建
+                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${GLOBAL_IMAGE_TAG}"
                         
                         /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
-                            --destination=${IMAGE_NAME}:${IMAGE_TAG} \\
+                            --destination=${IMAGE_NAME}:${GLOBAL_IMAGE_TAG} \\
                             --destination=${IMAGE_NAME}:latest \\
                             --cache=true \\
                             --cache-ttl=24h \\
@@ -311,9 +319,9 @@ except Exception as e:
                         
                         echo "✅ 镜像构建并推送完成"
                         echo "📦 推送的镜像:"
-                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "   - ${IMAGE_NAME}:${GLOBAL_IMAGE_TAG}"
                         echo "   - ${IMAGE_NAME}:latest"
-                        echo "🆔 唯一构建标识: ${UNIQUE_BUILD_ID}"
+                        echo "🆔 全局唯一构建标识: ${GLOBAL_UNIQUE_BUILD_ID}"
                     '''
                 }
             }
@@ -329,6 +337,8 @@ except Exception as e:
                         echo "镜像推送验证:"
                         echo "仓库地址: ${HARBOR_REGISTRY}"
                         echo "项目: ${HARBOR_PROJECT}"
+                        echo "镜像: ${params.APP_NAME}:${env.GLOBAL_IMAGE_TAG}"
+                        echo "全局唯一构建ID: ${env.GLOBAL_UNIQUE_BUILD_ID}"
                         echo "镜像: ${params.APP_NAME}:${env.IMAGE_TAG}"
                         echo "唯一构建ID: ${env.UNIQUE_BUILD_ID}"
                         
@@ -346,6 +356,8 @@ except Exception as e:
                 echo "🧹 清理构建环境"
                 echo "📋 构建完成信息:"
                 echo "   Jenkins构建号: ${BUILD_NUMBER}"
+                echo "   全局唯一构建ID: ${env.GLOBAL_UNIQUE_BUILD_ID}"
+                echo "   全局镜像标签: ${env.GLOBAL_IMAGE_TAG}"
                 echo "   唯一构建ID: ${env.UNIQUE_BUILD_ID}"
                 echo "   镜像标签: ${env.IMAGE_TAG}"
             }
@@ -353,6 +365,8 @@ except Exception as e:
         success {
             script {
                 echo "🎉 构建成功!"
+                echo "📦 镜像已推送到: ${IMAGE_NAME}:${env.GLOBAL_IMAGE_TAG}"
+                echo "🆔 全局唯一构建标识: ${env.GLOBAL_UNIQUE_BUILD_ID}"
                 echo "📦 镜像已推送到: ${IMAGE_NAME}:${env.IMAGE_TAG}"
                 echo "🆔 唯一构建标识: ${env.UNIQUE_BUILD_ID}"
                 
@@ -363,6 +377,7 @@ except Exception as e:
         failure {
             script {
                 echo "❌ 构建失败!"
+                echo "🆔 全局失败的构建标识: ${env.GLOBAL_UNIQUE_BUILD_ID}"
                 echo "🆔 失败的构建标识: ${env.UNIQUE_BUILD_ID}"
                 
                 // 可以在这里添加失败通知
