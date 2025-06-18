@@ -239,37 +239,44 @@ except Exception as e:
                     // 生成唯一构建标识符（解决并发构建问题）
                     echo "🔄 正在生成唯一构建标识符..."
                     def uniqueBuildId = generateUniqueBuildId()
-                    env.UNIQUE_BUILD_ID = uniqueBuildId
                     echo "✅ 唯一构建ID已生成: ${uniqueBuildId}"
                     
                     // 生成镜像标签（传入uniqueBuildId避免循环依赖）
                     echo "🔄 正在生成镜像标签..."
                     def imageTag = generateImageTag(uniqueBuildId)
-                    env.IMAGE_TAG = imageTag
                     echo "✅ 镜像标签已生成: ${imageTag}"
+                    
+                    // 设置环境变量（使用script块内的方式）
+                    env.UNIQUE_BUILD_ID = uniqueBuildId
+                    env.IMAGE_TAG = imageTag
+                    
+                    // 验证环境变量设置
+                    echo "🔍 验证环境变量设置:"
+                    echo "   UNIQUE_BUILD_ID = ${env.UNIQUE_BUILD_ID}"
+                    echo "   IMAGE_TAG = ${env.IMAGE_TAG}"
                     
                     echo "应用名称: ${params.APP_NAME}"
                     echo "应用版本: ${params.APP_VERSION}" 
                     echo "镜像名称: ${IMAGE_NAME}"
-                    echo "镜像标签: ${env.IMAGE_TAG}"
-                    echo "唯一构建ID: ${env.UNIQUE_BUILD_ID}"
+                    echo "镜像标签: ${imageTag}"
+                    echo "唯一构建ID: ${uniqueBuildId}"
                     echo "Harbor 仓库: ${HARBOR_REGISTRY}"
                     echo "项目: ${HARBOR_PROJECT}"
-                    
-                    // 显示构建信息
-                    sh """
-                        echo "=== 构建信息 ==="
-                        echo "Jenkins构建号: ${BUILD_NUMBER}"
-                        echo "唯一构建ID: ${env.UNIQUE_BUILD_ID}"
-                        echo "镜像标签: ${env.IMAGE_TAG}"
-                        echo "构建时间: \$(date)"
-                        echo "构建节点: \$(hostname)"
-                        echo "Jenkins URL: ${JENKINS_URL}"
-                        echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
-                        echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
-                        echo "构建策略: ${params.IMAGE_TAG_STRATEGY}"
-                    """
                 }
+                
+                // 在script块外部使用sh，此时环境变量应该可用
+                sh '''
+                    echo "=== 构建信息 ==="
+                    echo "Jenkins构建号: ${BUILD_NUMBER}"
+                    echo "唯一构建ID: ${UNIQUE_BUILD_ID}"
+                    echo "镜像标签: ${IMAGE_TAG}"
+                    echo "构建时间: $(date)"
+                    echo "构建节点: $(hostname)"
+                    echo "Jenkins URL: ${JENKINS_URL}"
+                    echo "原始文件名: ${BUILD_ARCHIVE_FILENAME:-'未设置'}"
+                    echo "实际使用文件: ${ACTUAL_ARCHIVE_FILE}"
+                    echo "构建策略: ${IMAGE_TAG_STRATEGY}"
+                '''
             }
         }
 
