@@ -97,7 +97,7 @@ pipeline {
                     
                     echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
                     
-                    // 检测文件类型并解压 - 使用 Jenkins 内置功能
+                    // 检测文件类型并解压 - 使用 Pipeline Utility Steps
                     script {
                         def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
                         
@@ -106,171 +106,92 @@ pipeline {
                         
                         echo "📂 开始解压文件: ${uploadedArchive}"
                         
-                        // 根据文件扩展名使用适当的解压方法
+                        // 根据文件扩展名使用适当的 Pipeline Utility Steps
                         try {
                             if (uploadedArchive.endsWith('.zip')) {
-                                echo "使用 Pipeline Utility Steps 插件解压 ZIP 文件"
+                                echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
                                 unzip zipFile: uploadedArchive, quiet: false
                                 echo "✅ ZIP 文件解压完成"
                             } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                echo "使用 tar 解压 TAR.GZ 文件"
-                                sh "tar -xzf '${uploadedArchive}'"
+                                echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
+                                untar file: uploadedArchive, compression: 'gzip', quiet: false
                                 echo "✅ TAR.GZ 文件解压完成"
                             } else if (uploadedArchive.endsWith('.tar')) {
-                                echo "使用 tar 解压 TAR 文件"
-                                sh "tar -xf '${uploadedArchive}'"
+                                echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
+                                untar file: uploadedArchive, quiet: false
                                 echo "✅ TAR 文件解压完成"
                             } else {
-                                echo "尝试自动检测文件类型并解压"
-                                // 首先尝试作为 ZIP 文件解压
+                                echo "⚠️  未知文件格式，尝试通用解压方法"
+                                // 先尝试作为 ZIP 文件
                                 try {
                                     echo "尝试按 ZIP 格式解压"
                                     unzip zipFile: uploadedArchive, quiet: false
                                     echo "✅ 按 ZIP 格式解压成功"
-                                } catch (Exception zipException) {
-                                    echo "❌ ZIP 解压失败，尝试使用 Python 通用解压"
-                                    sh '''
-                                        python3 -c "
-import zipfile
-import tarfile
-import sys
-
-archive_file = '${uploadedArchive}'
-print(f'尝试解压文件: {archive_file}')
-
-# 尝试 TAR.GZ
-try:
-    with tarfile.open(archive_file, 'r:gz') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR.GZ 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-# 尝试 TAR
-try:
-    with tarfile.open(archive_file, 'r') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-print('❌ 所有解压方式都失败了')
-sys.exit(1)
-                                        "
-                                    '''
+                                } catch (Exception zipEx) {
+                                    echo "ZIP 解压失败，尝试按 TAR 格式解压"
+                                    try {
+                                        untar file: uploadedArchive, quiet: false
+                                        echo "✅ 按 TAR 格式解压成功"
+                                    } catch (Exception tarEx) {
+                                        echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
+                                        untar file: uploadedArchive, compression: 'gzip', quiet: false
+                                        echo "✅ 按 TAR.GZ 格式解压成功"
+                                    }
                                 }
                             }
                         } catch (Exception e) {
-                            echo "❌ 主要解压方法失败: ${e.getMessage()}"
-                            echo "尝试使用 Python 通用解压作为备用方案..."
+                            echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
+                            echo "回退到传统方法解压..."
                             
-                            sh '''
-                                python3 -c "
+                            // 回退到传统命令行解压
+                            if (uploadedArchive.endsWith('.zip')) {
+                                echo "使用 Python 解压 ZIP 文件"
+                                sh '''
+                                    python3 -c "
 import zipfile
-import tarfile
 import sys
-
-archive_file = '${uploadedArchive}'
-print(f'备用解压尝试: {archive_file}')
-
-# 尝试 ZIP
 try:
-    with zipfile.ZipFile(archive_file, 'r') as zip_ref:
+    with zipfile.ZipFile('${uploadedArchive}', 'r') as zip_ref:
         zip_ref.extractall('.')
-    print('✅ 按 ZIP 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-# 尝试 TAR.GZ
-try:
-    with tarfile.open(archive_file, 'r:gz') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR.GZ 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-# 尝试 TAR
-try:
-    with tarfile.open(archive_file, 'r') as tar_ref:
-        tar_ref.extractall('.')
-    print('✅ 按 TAR 格式解压成功')
-    sys.exit(0)
-except:
-    pass
-
-print('❌ 所有解压方式都失败了')
-sys.exit(1)
-                                "
-                            '''
+    print('✅ Python ZIP 解压成功')
+except Exception as e:
+    print(f'❌ Python ZIP 解压失败: {e}')
+    sys.exit(1)
+                                    "
+                                '''
+                            } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
+                                echo "使用 tar 解压 TAR.GZ 文件"
+                                sh "tar -xzf '${uploadedArchive}'"
+                            } else if (uploadedArchive.endsWith('.tar')) {
+                                echo "使用 tar 解压 TAR 文件"
+                                sh "tar -xf '${uploadedArchive}'"
+                            }
                         }
                         
                         echo "📁 解压后工作空间内容:"
                         sh "ls -la"
                     }
                     
-                    // 自动检测并设置构建目录
+                    // 验证构建目录和文件是否存在
                     sh """
-                        echo "🔍 检测解压后的目录结构..."
-                        echo "📁 当前目录内容:"
-                        ls -la
-                        
-                        # 查找可能的构建目录
-                        echo "🔍 查找包含 Dockerfile 的目录..."
-                        
-                        # 首先尝试参数指定的目录
-                        if [ -d "${BUILD_CONTEXT_PATH}" ] && [ -f "${BUILD_CONTEXT_PATH}/Dockerfile" ]; then
-                            DETECTED_BUILD_CONTEXT="${BUILD_CONTEXT_PATH}"
-                            echo "✅ 使用参数指定的构建目录: \$DETECTED_BUILD_CONTEXT"
-                        else
-                            echo "⚠️  参数指定的目录 ${BUILD_CONTEXT_PATH} 不存在或无 Dockerfile"
-                            
-                            # 查找包含 Dockerfile 的目录
-                            DOCKERFILE_DIRS=\$(find . -name "Dockerfile" -type f | head -10)
-                            
-                            if [ -z "\$DOCKERFILE_DIRS" ]; then
-                                echo "❌ 错误: 在解压的文件中找不到任何 Dockerfile"
-                                echo "📁 完整目录结构:"
-                                find . -type f | head -20
-                                exit 1
-                            fi
-                            
-                            # 使用第一个找到的 Dockerfile 所在目录
-                            FIRST_DOCKERFILE=\$(echo "\$DOCKERFILE_DIRS" | head -1)
-                            DETECTED_BUILD_CONTEXT=\$(dirname "\$FIRST_DOCKERFILE")
-                            
-                            # 如果是当前目录，设置为 "."
-                            if [ "\$DETECTED_BUILD_CONTEXT" = "." ]; then
-                                DETECTED_BUILD_CONTEXT="."
-                            fi
-                            
-                            echo "✅ 自动检测到构建目录: \$DETECTED_BUILD_CONTEXT"
-                            echo "📁 找到的 Dockerfile 列表:"
-                            echo "\$DOCKERFILE_DIRS"
+                        if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
+                            echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
+                            echo "📁 当前目录内容:"
+                            find . -type d -maxdepth 2
+                            exit 1
                         fi
                         
-                        # 保存检测到的构建目录
-                        echo "DETECTED_BUILD_CONTEXT=\$DETECTED_BUILD_CONTEXT" > build_context.env
-                        echo "DOCKERFILE_PATH=\$DETECTED_BUILD_CONTEXT/Dockerfile" >> build_context.env
+                        if [ ! -f "${DOCKERFILE_PATH}" ]; then
+                            echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
+                            echo "📁 构建目录内容:"
+                            ls -la ${BUILD_CONTEXT_PATH}/
+                            exit 1
+                        fi
                         
-                        echo "✅ 构建目录检测完成: \$DETECTED_BUILD_CONTEXT"
+                        echo "✅ 构建文件验证通过"
                         echo "📁 构建目录内容:"
-                        ls -la "\$DETECTED_BUILD_CONTEXT"/
+                        ls -la ${BUILD_CONTEXT_PATH}/
                     """
-                    
-                    // 读取检测到的构建目录信息
-                    def buildContextInfo = readFile('build_context.env').trim()
-                    buildContextInfo.split('\n').each { line ->
-                        def (key, value) = line.split('=', 2)
-                        env[key] = value
-                    }
-                    
-                    echo "🎯 最终确定的构建配置:"
-                    echo "构建目录: ${env.DETECTED_BUILD_CONTEXT}"
-                    echo "Dockerfile 路径: ${env.DOCKERFILE_PATH}"
                 }
             }
         }
