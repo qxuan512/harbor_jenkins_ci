@@ -14,12 +14,12 @@ spec:
     env:
     - name: DOCKER_CONFIG
       value: /kaniko/.docker
-    - name: KANIKO_INSECURE_REGISTRIES
-      value: "registry.test.shifu.dev"
-    - name: KANIKO_INSECURE
-      value: "true"
-    - name: KANIKO_SKIP_TLS_VERIFY
-      value: "true"
+    # - name: KANIKO_INSECURE_REGISTRIES
+    #   value: "registry.test.shifu.dev"
+    # - name: KANIKO_INSECURE
+    #   value: "true"
+    # - name: KANIKO_SKIP_TLS_VERIFY
+    #   value: "true"
   volumes:
   - name: jenkins-docker-cfg
     projected:
