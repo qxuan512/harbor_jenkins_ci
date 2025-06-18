@@ -237,12 +237,16 @@ except Exception as e:
                     echo "🔧 构建准备阶段"
                     
                     // 生成唯一构建标识符（解决并发构建问题）
+                    echo "🔄 正在生成唯一构建标识符..."
                     def uniqueBuildId = generateUniqueBuildId()
                     env.UNIQUE_BUILD_ID = uniqueBuildId
+                    echo "✅ 唯一构建ID已生成: ${uniqueBuildId}"
                     
-                    // 生成镜像标签
-                    def imageTag = generateImageTag()
+                    // 生成镜像标签（传入uniqueBuildId避免循环依赖）
+                    echo "🔄 正在生成镜像标签..."
+                    def imageTag = generateImageTag(uniqueBuildId)
                     env.IMAGE_TAG = imageTag
+                    echo "✅ 镜像标签已生成: ${imageTag}"
                     
                     echo "应用名称: ${params.APP_NAME}"
                     echo "应用版本: ${params.APP_VERSION}" 
@@ -363,25 +367,35 @@ except Exception as e:
 
 // 生成唯一构建标识符的函数（解决并发构建问题）
 def generateUniqueBuildId() {
-    // 组合多种元素来确保唯一性
-    def timestamp = new Date().format('yyyyMMdd-HHmmss-SSS')
-    def randomId = UUID.randomUUID().toString().split('-')[0]
-    def buildNumber = env.BUILD_NUMBER ?: "0"
-    def jobName = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9]', '') ?: "job"
-    
-    // 格式: {job}-{build}-{timestamp}-{random}
-    return "${jobName}-${buildNumber}-${timestamp}-${randomId}".toLowerCase()
+    try {
+        // 组合多种元素来确保唯一性
+        def timestamp = new Date().format('yyyyMMdd-HHmmss-SSS')
+        def randomId = java.util.UUID.randomUUID().toString().split('-')[0]
+        def buildNumber = env.BUILD_NUMBER ?: "0"
+        def jobName = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9]', '') ?: "job"
+        
+        // 格式: {job}-{build}-{timestamp}-{random}
+        def uniqueId = "${jobName}-${buildNumber}-${timestamp}-${randomId}".toLowerCase()
+        echo "🔧 生成的唯一ID: ${uniqueId}"
+        return uniqueId
+    } catch (Exception e) {
+        echo "❌ 生成唯一ID失败: ${e.getMessage()}"
+        // 回退方案：使用时间戳
+        def fallbackId = "job-${env.BUILD_NUMBER ?: '0'}-${new Date().format('yyyyMMddHHmmssSSS')}"
+        echo "🔄 使用回退ID: ${fallbackId}"
+        return fallbackId
+    }
 }
 
 // 生成镜像标签的函数（支持唯一性保证）
-def generateImageTag() {
+def generateImageTag(uniqueId = null) {
     def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build-unique'
-    def uniqueId = env.UNIQUE_BUILD_ID ?: generateUniqueBuildId()
+    def actualUniqueId = uniqueId ?: generateUniqueBuildId()
     
     switch(strategy) {
         case 'version-build-unique':
             // 使用唯一ID而不是BUILD_NUMBER，确保并发安全
-            def shortId = uniqueId.split('-')[-1] // 取最后一段随机ID
+            def shortId = actualUniqueId.split('-')[-1] // 取最后一段随机ID
             return "${params.APP_VERSION}-${BUILD_NUMBER}-${shortId}"
             
         case 'version-build':
@@ -397,7 +411,7 @@ def generateImageTag() {
             
         default:
             // 默认使用唯一方式
-            def shortId = uniqueId.split('-')[-1]
+            def shortId = actualUniqueId.split('-')[-1]
             return "${params.APP_VERSION}-${BUILD_NUMBER}-${shortId}"
     }
 } 
