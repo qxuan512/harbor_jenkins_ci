@@ -1,39 +1,7 @@
 pipeline {
     agent {
         kubernetes {
-            yaml '''
-                kind: Pod
-                spec:
-                  containers:
-                  - name: kaniko
-                    image: gcr.io/kaniko-project/executor:debug
-                    imagePullPolicy: Always
-                    command:
-                    - sleep
-                    args:
-                    - 9999999
-                    volumeMounts:
-                      - name: jenkins-docker-cfg
-                        mountPath: /kaniko/.docker
-                    env:
-                    - name: DOCKER_CONFIG
-                      value: /kaniko/.docker
-                    - name: KANIKO_INSECURE_REGISTRIES
-                      value: "registry.test.shifu.dev"
-                    - name: KANIKO_INSECURE
-                      value: "true"
-                    - name: KANIKO_SKIP_TLS_VERIFY
-                      value: "true"
-                  volumes:
-                  - name: jenkins-docker-cfg
-                    projected:
-                      sources:
-                      - secret:
-                          name: harbor-credentials
-                          items:
-                            - key: .dockerconfigjson
-                              path: config.json
-            '''
+            yamlFile 'kaniko-builder-harbor.yaml'
         }
     }
 
@@ -42,7 +10,7 @@ pipeline {
         string(name: 'APP_NAME', defaultValue: 'iot-driver', description: '应用名称')
         string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
         string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
-        choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build-unique', 'version-build', 'timestamp', 'latest'], description: '镜像标签策略')
+        choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
         // 添加文件上传参数
         stashedFile(name: 'BUILD_ARCHIVE', description: '上传包含构建上下文的压缩文件 (支持 .zip, .tar, .tar.gz)')
     }
@@ -56,6 +24,7 @@ pipeline {
         
         // 镜像配置
         IMAGE_NAME = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${params.APP_NAME}"
+        IMAGE_TAG = generateImageTag()
         
         // 构建配置
         DOCKERFILE_PATH = "${params.BUILD_CONTEXT}/Dockerfile"
@@ -128,7 +97,7 @@ pipeline {
                     
                     echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
                     
-                    // 检测文件类型并解压 - 使用 Pipeline Utility Steps
+                    // 检测文件类型并解压 - 使用 Jenkins 内置功能
                     script {
                         def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
                         
@@ -137,46 +106,18 @@ pipeline {
                         
                         echo "📂 开始解压文件: ${uploadedArchive}"
                         
-                        // 根据文件扩展名使用适当的 Pipeline Utility Steps
+                        // 使用 Jenkins 内置的 unarchive 步骤
                         try {
-                            if (uploadedArchive.endsWith('.zip')) {
-                                echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
-                                unzip zipFile: uploadedArchive, quiet: false
-                                echo "✅ ZIP 文件解压完成"
-                            } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
-                                untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                echo "✅ TAR.GZ 文件解压完成"
-                            } else if (uploadedArchive.endsWith('.tar')) {
-                                echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
-                                untar file: uploadedArchive, quiet: false
-                                echo "✅ TAR 文件解压完成"
-                            } else {
-                                echo "⚠️  未知文件格式，尝试通用解压方法"
-                                // 先尝试作为 ZIP 文件
-                                try {
-                                    echo "尝试按 ZIP 格式解压"
-                                    unzip zipFile: uploadedArchive, quiet: false
-                                    echo "✅ 按 ZIP 格式解压成功"
-                                } catch (Exception zipEx) {
-                                    echo "ZIP 解压失败，尝试按 TAR 格式解压"
-                                    try {
-                                        untar file: uploadedArchive, quiet: false
-                                        echo "✅ 按 TAR 格式解压成功"
-                                    } catch (Exception tarEx) {
-                                        echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
-                                        untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                        echo "✅ 按 TAR.GZ 格式解压成功"
-                                    }
-                                }
-                            }
+                            echo "使用 Jenkins 内置 unarchive 解压文件"
+                            unarchive mapping: [:], file: uploadedArchive
+                            echo "✅ 文件解压完成"
                         } catch (Exception e) {
-                            echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
-                            echo "回退到传统方法解压..."
+                            echo "❌ Jenkins unarchive 失败: ${e.getMessage()}"
+                            echo "尝试使用容器内命令解压..."
                             
-                            // 回退到传统命令行解压
+                            // 根据文件扩展名使用适当的命令行工具
                             if (uploadedArchive.endsWith('.zip')) {
-                                echo "使用 Python 解压 ZIP 文件"
+                                echo "尝试使用 Python 解压 ZIP 文件"
                                 sh '''
                                     python3 -c "
 import zipfile
@@ -196,6 +137,48 @@ except Exception as e:
                             } else if (uploadedArchive.endsWith('.tar')) {
                                 echo "使用 tar 解压 TAR 文件"
                                 sh "tar -xf '${uploadedArchive}'"
+                            } else {
+                                echo "尝试 Python 通用解压"
+                                sh '''
+                                    python3 -c "
+import zipfile
+import tarfile
+import sys
+
+archive_file = '${uploadedArchive}'
+print(f'尝试解压文件: {archive_file}')
+
+# 尝试 ZIP
+try:
+    with zipfile.ZipFile(archive_file, 'r') as zip_ref:
+        zip_ref.extractall('.')
+    print('✅ 按 ZIP 格式解压成功')
+    sys.exit(0)
+except:
+    pass
+
+# 尝试 TAR.GZ
+try:
+    with tarfile.open(archive_file, 'r:gz') as tar_ref:
+        tar_ref.extractall('.')
+    print('✅ 按 TAR.GZ 格式解压成功')
+    sys.exit(0)
+except:
+    pass
+
+# 尝试 TAR
+try:
+    with tarfile.open(archive_file, 'r') as tar_ref:
+        tar_ref.extractall('.')
+    print('✅ 按 TAR 格式解压成功')
+    sys.exit(0)
+except:
+    pass
+
+print('❌ 所有解压方式都失败了')
+sys.exit(1)
+                                    "
+                                '''
                             }
                         }
                         
@@ -231,60 +214,24 @@ except Exception as e:
             steps {
                 script {
                     echo "🔧 构建准备阶段"
-                    
-                    // 生成唯一构建标识符（解决并发构建问题）
-                    echo "🔄 正在生成唯一构建标识符..."
-                    def uniqueBuildId = generateUniqueBuildId()
-                    echo "✅ 唯一构建ID已生成: ${uniqueBuildId}"
-                    
-                    // 生成镜像标签（传入uniqueBuildId避免循环依赖）
-                    echo "🔄 正在生成镜像标签..."
-                    def imageTag = generateImageTag(uniqueBuildId)
-                    echo "✅ 镜像标签已生成: ${imageTag}"
-                    
-                    // 设置环境变量
-                    env.UNIQUE_BUILD_ID = uniqueBuildId
-                    env.IMAGE_TAG = imageTag
-                    
-                    // 写入文件以确保在容器间传递
-                    writeFile file: 'build_vars.env', text: """
-UNIQUE_BUILD_ID=${uniqueBuildId}
-IMAGE_TAG=${imageTag}
-"""
-                    
-                    // 验证环境变量设置
-                    echo "🔍 验证环境变量设置:"
-                    echo "   UNIQUE_BUILD_ID = ${env.UNIQUE_BUILD_ID}"
-                    echo "   IMAGE_TAG = ${env.IMAGE_TAG}"
-                    
                     echo "应用名称: ${params.APP_NAME}"
                     echo "应用版本: ${params.APP_VERSION}" 
                     echo "镜像名称: ${IMAGE_NAME}"
-                    echo "镜像标签: ${imageTag}"
-                    echo "唯一构建ID: ${uniqueBuildId}"
+                    echo "镜像标签: ${IMAGE_TAG}"
                     echo "Harbor 仓库: ${HARBOR_REGISTRY}"
                     echo "项目: ${HARBOR_PROJECT}"
-                }
-                
-                // 在script块外部使用sh，此时环境变量应该可用
-                sh '''
-                    echo "=== 构建信息 ==="
-                    echo "Jenkins构建号: ${BUILD_NUMBER}"
-                    echo "唯一构建ID: ${UNIQUE_BUILD_ID}"
-                    echo "镜像标签: ${IMAGE_TAG}"
-                    echo "构建时间: $(date)"
-                    echo "构建节点: $(hostname)"
-                    echo "Jenkins URL: ${JENKINS_URL}"
-                    echo "原始文件名: ${BUILD_ARCHIVE_FILENAME:-'未设置'}"
-                    echo "实际使用文件: ${ACTUAL_ARCHIVE_FILE}"
-                    echo "构建策略: ${IMAGE_TAG_STRATEGY}"
                     
-                    # 验证环境变量文件
-                    if [ -f build_vars.env ]; then
-                        echo "📋 构建变量文件内容:"
-                        cat build_vars.env
-                    fi
-                '''
+                    // 显示构建信息
+                    sh """
+                        echo "=== 构建信息 ==="
+                        echo "构建号: ${BUILD_NUMBER}"
+                        echo "构建时间: \$(date)"
+                        echo "构建节点: \$(hostname)"
+                        echo "Jenkins URL: ${JENKINS_URL}"
+                        echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
+                        echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
+                    """
+                }
             }
         }
 
@@ -294,21 +241,6 @@ IMAGE_TAG=${imageTag}
                     sh '''#!/busybox/sh
                         echo "🚀 开始使用 Kaniko 构建 Docker 镜像"
                         
-                        # 从文件加载构建变量
-                        if [ -f build_vars.env ]; then
-                            echo "📋 加载构建变量..."
-                            . ./build_vars.env
-                            echo "   加载的唯一构建ID: $UNIQUE_BUILD_ID"
-                            echo "   加载的镜像标签: $IMAGE_TAG"
-                        else
-                            echo "⚠️  build_vars.env 文件不存在，使用环境变量"
-                        fi
-                        
-                        echo "📋 构建标识信息:"
-                        echo "   Jenkins构建号: ${BUILD_NUMBER}"
-                        echo "   唯一构建ID: $UNIQUE_BUILD_ID"
-                        echo "   镜像标签: $IMAGE_TAG"
-                        
                         # 显示 Kaniko 版本
                         /kaniko/executor version
                         
@@ -316,13 +248,13 @@ IMAGE_TAG=${imageTag}
                         echo "📂 构建上下文内容:"
                         ls -la ${BUILD_CONTEXT_PATH}/
                         
-                        # 使用加载的变量进行构建
-                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:$IMAGE_TAG"
+                        # 执行镜像构建和推送
+                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
                         
                         /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
-                            --destination=${IMAGE_NAME}:$IMAGE_TAG \\
+                            --destination=${IMAGE_NAME}:${IMAGE_TAG} \\
                             --destination=${IMAGE_NAME}:latest \\
                             --cache=true \\
                             --cache-ttl=24h \\
@@ -330,9 +262,8 @@ IMAGE_TAG=${imageTag}
                         
                         echo "✅ 镜像构建并推送完成"
                         echo "📦 推送的镜像:"
-                        echo "   - ${IMAGE_NAME}:$IMAGE_TAG"
+                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}"
                         echo "   - ${IMAGE_NAME}:latest"
-                        echo "🆔 唯一构建标识: $UNIQUE_BUILD_ID"
                     '''
                 }
             }
@@ -348,16 +279,7 @@ IMAGE_TAG=${imageTag}
                         echo "镜像推送验证:"
                         echo "仓库地址: ${HARBOR_REGISTRY}"
                         echo "项目: ${HARBOR_PROJECT}"
-                        echo "镜像: ${params.APP_NAME}:${env.IMAGE_TAG}"
-                        echo "唯一构建ID: ${env.UNIQUE_BUILD_ID}"
-                        
-                        # 验证构建变量文件
-                        if [ -f build_vars.env ]; then
-                            echo "📋 从文件读取的构建变量:"
-                            . ./build_vars.env
-                            echo "   唯一构建ID: \$UNIQUE_BUILD_ID"
-                            echo "   镜像标签: \$IMAGE_TAG"
-                        fi
+                        echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}"
                         
                         # 可以添加 Harbor API 调用来验证镜像
                         # curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
@@ -371,17 +293,12 @@ IMAGE_TAG=${imageTag}
         always {
             script {
                 echo "🧹 清理构建环境"
-                echo "📋 构建完成信息:"
-                echo "   Jenkins构建号: ${BUILD_NUMBER}"
-                echo "   唯一构建ID: ${env.UNIQUE_BUILD_ID}"
-                echo "   镜像标签: ${env.IMAGE_TAG}"
             }
         }
         success {
             script {
                 echo "🎉 构建成功!"
-                echo "📦 镜像已推送到: ${IMAGE_NAME}:${env.IMAGE_TAG}"
-                echo "🆔 唯一构建标识: ${env.UNIQUE_BUILD_ID}"
+                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG}"
                 
                 // 可以在这里添加成功通知，比如发送到企业微信、钉钉等
                 // notifySuccess()
@@ -390,7 +307,6 @@ IMAGE_TAG=${imageTag}
         failure {
             script {
                 echo "❌ 构建失败!"
-                echo "🆔 失败的构建标识: ${env.UNIQUE_BUILD_ID}"
                 
                 // 可以在这里添加失败通知
                 // notifyFailure()
@@ -399,53 +315,18 @@ IMAGE_TAG=${imageTag}
     }
 }
 
-// 生成唯一构建标识符的函数（解决并发构建问题）
-def generateUniqueBuildId() {
-    try {
-        // 组合多种元素来确保唯一性
-        def timestamp = new Date().format('yyyyMMdd-HHmmss-SSS')
-        def randomId = java.util.UUID.randomUUID().toString().split('-')[0]
-        def buildNumber = env.BUILD_NUMBER ?: "0"
-        def jobName = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9]', '') ?: "job"
-        
-        // 格式: {job}-{build}-{timestamp}-{random}
-        def uniqueId = "${jobName}-${buildNumber}-${timestamp}-${randomId}".toLowerCase()
-        echo "🔧 生成的唯一ID: ${uniqueId}"
-        return uniqueId
-    } catch (Exception e) {
-        echo "❌ 生成唯一ID失败: ${e.getMessage()}"
-        // 回退方案：使用时间戳
-        def fallbackId = "job-${env.BUILD_NUMBER ?: '0'}-${new Date().format('yyyyMMddHHmmssSSS')}"
-        echo "🔄 使用回退ID: ${fallbackId}"
-        return fallbackId
-    }
-}
-
-// 生成镜像标签的函数（支持唯一性保证）
-def generateImageTag(uniqueId = null) {
-    def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build-unique'
-    def actualUniqueId = uniqueId ?: generateUniqueBuildId()
+// 生成镜像标签的函数
+def generateImageTag() {
+    def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build'
     
     switch(strategy) {
-        case 'version-build-unique':
-            // 使用唯一ID而不是BUILD_NUMBER，确保并发安全
-            def shortId = actualUniqueId.split('-')[-1] // 取最后一段随机ID
-            return "${params.APP_VERSION}-${BUILD_NUMBER}-${shortId}"
-            
         case 'version-build':
-            // 传统方式，可能在并发时有冲突
             return "${params.APP_VERSION}-${BUILD_NUMBER}"
-            
         case 'timestamp':
-            // 使用精确时间戳，并发安全
-            return "${params.APP_VERSION}-${new Date().format('yyyyMMdd-HHmmss-SSS')}"
-            
+            return "${params.APP_VERSION}-${new Date().format('yyyyMMdd-HHmmss')}"
         case 'latest':
             return 'latest'
-            
         default:
-            // 默认使用唯一方式
-            def shortId = actualUniqueId.split('-')[-1]
-            return "${params.APP_VERSION}-${BUILD_NUMBER}-${shortId}"
+            return "${params.APP_VERSION}-${BUILD_NUMBER}"
     }
 } 
