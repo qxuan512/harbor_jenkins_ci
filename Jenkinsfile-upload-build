@@ -11,6 +11,8 @@ pipeline {
         string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
         string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
         choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
+        // 唯一ID参数，确保每个构建job的唯一性
+        string(name: 'BUILD_UNIQUE_ID', defaultValue: '', description: '构建唯一标识符 (可选，用于确保构建的唯一性，留空则自动生成)')
         // 添加文件上传参数
         stashedFile(name: 'BUILD_ARCHIVE', description: '上传包含构建上下文的压缩文件 (支持 .zip, .tar, .tar.gz)')
     }
@@ -200,8 +202,20 @@ except Exception as e:
             steps {
                 script {
                     echo "🔧 构建准备阶段"
+                    
+                    // 处理唯一ID - 通常由Python脚本生成并传递
+                    def uniqueId = params.BUILD_UNIQUE_ID
+                    if (!uniqueId || uniqueId.trim().isEmpty()) {
+                        uniqueId = "${new Date().format('yyyyMMddHHmmss')}-${BUILD_NUMBER}-${UUID.randomUUID().toString().substring(0, 8)}"
+                        echo "📋 Jenkins生成唯一ID: ${uniqueId}"
+                    } else {
+                        echo "📋 使用传递的唯一ID: ${uniqueId}"
+                    }
+                    env.ACTUAL_UNIQUE_ID = uniqueId
+                    
                     echo "应用名称: ${params.APP_NAME}"
                     echo "应用版本: ${params.APP_VERSION}" 
+                    echo "构建唯一ID: ${uniqueId}"
                     echo "镜像名称: ${IMAGE_NAME}"
                     echo "镜像标签: ${IMAGE_TAG}"
                     echo "Harbor 仓库: ${HARBOR_REGISTRY}"
@@ -211,6 +225,7 @@ except Exception as e:
                     sh """
                         echo "=== 构建信息 ==="
                         echo "构建号: ${BUILD_NUMBER}"
+                        echo "构建唯一ID: ${uniqueId}"
                         echo "构建时间: \$(date)"
                         echo "构建节点: \$(hostname)"
                         echo "Jenkins URL: ${JENKINS_URL}"
