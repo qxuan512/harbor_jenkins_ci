@@ -309,7 +309,7 @@ except Exception as e:
                             --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
                             --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
                             --custom-platform=${BUILD_PLATFORM} \\
-                            --build-arg=TARGETARCH=${PLATFORM_ARCH}
+                            --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
                             --cache=true \\
                             --cache-ttl=24h \\
                             --cleanup
