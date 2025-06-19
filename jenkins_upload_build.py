@@ -1,4 +1,26 @@
 #!/usr/bin/env python3
+"""
+Jenkins 文件上传构建工具
+
+新功能: 使用队列API解决并发构建序列号冲突问题
+================================================
+
+本工具现在支持两种触发构建的方法：
+
+1. 队列API方法（推荐，默认启用）
+   - 使用Jenkins队列API获取实际的构建号
+   - 解决了两个终端同时触发构建时可能获取到相同序列号的问题
+   - 通过队列项编号追踪构建，确保获取正确的构建号
+
+2. 传统方法（--use-legacy-method）
+   - 预测构建序列号的传统方法
+   - 在并发场景下可能出现序列号冲突问题
+
+使用示例：
+- 默认队列API方法: python3 jenkins_upload_build.py
+- 传统方法: python3 jenkins_upload_build.py --use-legacy-method
+- 自定义队列超时: python3 jenkins_upload_build.py --queue-api-timeout 180
+"""
 
 import jenkins
 import json
@@ -9,6 +31,8 @@ import requests
 import argparse
 from pathlib import Path
 import zipfile
+import uuid
+from datetime import datetime
 
 
 class JenkinsUploadBuilder:
@@ -136,6 +160,145 @@ class JenkinsUploadBuilder:
                         "message": "构建已触发，但未能获取构建号",
                         "uploaded_file": str(file_path),
                     }
+            else:
+                return {
+                    "success": False,
+                    "message": f"HTTP 请求失败: {response.status_code} - {response.text}",
+                }
+
+        except requests.exceptions.Timeout:
+            return {"success": False, "message": "上传超时，请检查网络连接或文件大小"}
+        except Exception as e:
+            return {"success": False, "message": f"上传失败: {str(e)}"}
+
+    def upload_and_build_with_queue_api(
+        self, job_name, file_path, parameters=None, max_wait=120
+    ):
+        """
+        上传文件并触发 Jenkins 构建（使用队列API解决并发问题）
+
+        Args:
+            job_name: Jenkins任务名称
+            file_path: 要上传的文件路径
+            parameters: 构建参数字典
+            max_wait: 队列API等待超时时间（秒）
+
+        Returns:
+            dict: 包含成功状态、构建号、队列项编号等信息
+        """
+        try:
+            # 检查任务是否存在
+            if not self.server.job_exists(job_name):
+                return {
+                    "success": False,
+                    "message": f'Jenkins 任务 "{job_name}" 不存在',
+                }
+
+            # 检查文件是否存在
+            file_path = Path(file_path)
+            if not file_path.exists():
+                return {
+                    "success": False,
+                    "message": f"上传文件不存在: {file_path}",
+                }
+
+            print(f"🚀 开始触发构建任务: {job_name} (使用队列API)")
+            print(f"📁 上传文件: {file_path} ({file_path.stat().st_size} bytes)")
+
+            # 准备上传数据
+            files = {
+                "BUILD_ARCHIVE": (
+                    file_path.name,
+                    open(file_path, "rb"),
+                    "application/octet-stream",
+                )
+            }
+
+            # 添加其他参数
+            data = {}
+            if parameters:
+                print(
+                    f"📋 构建参数: {json.dumps(parameters, indent=2, ensure_ascii=False)}"
+                )
+                data.update(parameters)
+
+            # 构建请求 URL
+            build_url = f"{self.jenkins_url}/job/{job_name}/buildWithParameters"
+
+            # 发送 POST 请求
+            print(f"📤 正在上传文件并触发构建...")
+
+            response = requests.post(
+                build_url,
+                auth=(self.username, self.api_token),
+                files=files,
+                data=data,
+                timeout=300,  # 5分钟超时
+            )
+
+            # 关闭文件
+            files["BUILD_ARCHIVE"][1].close()
+
+            if response.status_code in [200, 201]:
+                print("✅ 文件上传并触发构建成功")
+
+                # 调试：显示响应头信息
+                print(f"🔍 响应状态码: {response.status_code}")
+                queue_url = response.headers.get("Location")
+                print(f"🔍 Location响应头: {queue_url}")
+
+                # 从响应头中获取队列URL
+                if queue_url:
+                    # 提取队列项编号
+                    import re
+
+                    queue_match = re.search(r"/queue/item/(\d+)/", queue_url)
+                    if queue_match:
+                        queue_item_number = int(queue_match.group(1))
+                        print(f"✅ 构建已加入队列，队列项编号: {queue_item_number}")
+                        print(
+                            f"🔗 队列API: {self.jenkins_url}/queue/item/{queue_item_number}/api/json"
+                        )
+
+                        # 使用队列API等待构建开始
+                        actual_build_number = self.wait_for_build_start_by_queue(
+                            queue_item_number, max_wait
+                        )
+
+                        if actual_build_number:
+                            build_info = self.server.get_build_info(
+                                job_name, actual_build_number
+                            )
+                            return {
+                                "success": True,
+                                "message": "构建触发成功（队列API方法）",
+                                "build_number": actual_build_number,
+                                "queue_item_number": queue_item_number,
+                                "build_url": build_info["url"],
+                                "uploaded_file": str(file_path),
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "message": "等待构建开始超时或失败",
+                                "queue_item_number": queue_item_number,
+                                "uploaded_file": str(file_path),
+                            }
+                    else:
+                        print(f"⚠️  无法从Location头中提取队列项编号: {queue_url}")
+                        print("🔄 尝试使用Jenkins Python库方法...")
+                        return self._try_jenkins_library_method(
+                            job_name, file_path, parameters, max_wait
+                        )
+                else:
+                    print("⚠️  响应头中没有Location字段")
+                    print("🔍 所有响应头:")
+                    for key, value in response.headers.items():
+                        print(f"     {key}: {value}")
+                    print("🔄 尝试使用Jenkins Python库方法...")
+                    return self._try_jenkins_library_method(
+                        job_name, file_path, parameters, max_wait
+                    )
             else:
                 return {
                     "success": False,
@@ -746,12 +909,106 @@ class JenkinsUploadBuilder:
         except Exception as e:
             return f"获取控制台输出失败: {e}"
 
-    def trigger_build_and_wait_result(
+    def get_queue_item_info(self, queue_item_number):
+        """
+        获取队列项目信息
+
+        Args:
+            queue_item_number: 队列项目编号
+
+        Returns:
+            dict: 队列项目信息，包含 executable 字段（如果构建已开始）
+        """
+        try:
+            queue_api_url = (
+                f"{self.jenkins_url}/queue/item/{queue_item_number}/api/json"
+            )
+            response = requests.get(
+                queue_api_url, auth=(self.username, self.api_token), timeout=10
+            )
+
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            elif response.status_code == 404:
+                # 队列项目已被移除（通常意味着构建已完成一段时间）
+                return {
+                    "success": False,
+                    "error": "队列项目已被移除",
+                    "status_code": 404,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"HTTP {response.status_code}",
+                    "status_code": response.status_code,
+                }
+
+        except Exception as e:
+            return {"success": False, "error": f"获取队列信息失败: {str(e)}"}
+
+    def wait_for_build_start_by_queue(self, queue_item_number, max_wait=120):
+        """
+        通过队列API等待构建开始（解决并发构建序列号冲突问题）
+
+        Args:
+            queue_item_number: 队列项目编号
+            max_wait: 最大等待时间（秒）
+
+        Returns:
+            int: 实际构建号，如果超时或失败返回 None
+        """
+        print(f"⏳ 通过队列API等待构建开始 (队列项: {queue_item_number})...")
+
+        for i in range(max_wait):
+            try:
+                queue_info = self.get_queue_item_info(queue_item_number)
+
+                if not queue_info["success"]:
+                    if queue_info.get("status_code") == 404:
+                        print(
+                            f"⚠️  队列项目 {queue_item_number} 已被移除，可能构建已完成"
+                        )
+                        return None
+                    else:
+                        print(f"⚠️  获取队列信息失败: {queue_info['error']}")
+                        time.sleep(2)
+                        continue
+
+                queue_data = queue_info["data"]
+
+                # 检查是否还在排队
+                if "executable" not in queue_data or queue_data["executable"] is None:
+                    # 还在排队中
+                    if i % 10 == 0:  # 每10秒打印一次状态
+                        print(f"  📋 构建仍在队列中... ({i+1}/{max_wait}s)")
+                    time.sleep(1)
+                    continue
+                else:
+                    # 构建已经开始执行
+                    executable = queue_data["executable"]
+                    build_number = executable.get("number")
+
+                    if build_number:
+                        print(f"🚀 构建已开始，构建号: {build_number}")
+                        print(f"📊 构建URL: {executable.get('url', 'N/A')}")
+                        return build_number
+                    else:
+                        print(f"⚠️  无法从队列信息中获取构建号")
+                        time.sleep(1)
+                        continue
+
+            except Exception as e:
+                print(f"⚠️  检查队列状态时出错: {e}")
+                time.sleep(2)
+
+        print(f"⚠️  等待构建开始超时 ({max_wait}秒)")
+        return None
+
+    def trigger_build_and_wait_result_improved(
         self, job_name, parameters=None, wait_timeout=1800
     ):
         """
-        触发构建并等待完成，返回构建结果
-        解决 pending 期问题的完整接口
+        改进的触发构建并等待完成方法，使用队列API解决并发构建问题
 
         Args:
             job_name: 任务名称
@@ -767,6 +1024,148 @@ class JenkinsUploadBuilder:
                 return {"success": False, "error": f'Jenkins 任务 "{job_name}" 不存在'}
 
             print(f"🚀 开始触发构建任务: {job_name}")
+
+            # 触发构建并获取队列项目编号
+            if parameters:
+                print(
+                    f"📋 构建参数: {json.dumps(parameters, indent=2, ensure_ascii=False)}"
+                )
+                queue_item_number = self.server.build_job(job_name, parameters)
+            else:
+                queue_item_number = self.server.build_job(job_name)
+
+            print(f"✅ 构建已加入队列，队列项编号: {queue_item_number}")
+            print(
+                f"🔗 队列API: {self.jenkins_url}/queue/item/{queue_item_number}/api/json"
+            )
+
+            # 使用队列API等待构建开始
+            actual_build_number = self.wait_for_build_start_by_queue(queue_item_number)
+
+            if not actual_build_number:
+                return {"success": False, "error": "等待构建开始超时或失败"}
+
+            print(
+                f"🔗 构建链接: {self.jenkins_url}/job/{job_name}/{actual_build_number}/"
+            )
+
+            # 等待构建完成
+            result = self.wait_for_build_complete(
+                job_name, actual_build_number, wait_timeout, show_logs=True
+            )
+
+            if result["success"]:
+                build_result = result["result"]
+                duration = result["duration"]
+
+                # 获取构建日志
+                console_output = self.get_console_output(job_name, actual_build_number)
+
+                if build_result == "SUCCESS":
+                    print(f"🎉 构建成功完成! (耗时 {duration:.0f} 秒)")
+                    return {
+                        "success": True,
+                        "status": "SUCCESS",
+                        "message": "构建成功",
+                        "build_number": actual_build_number,
+                        "queue_item_number": queue_item_number,
+                        "duration": duration,
+                        "url": result["url"],
+                        "console_output": console_output,
+                    }
+                elif build_result == "FAILURE":
+                    print(f"❌ 构建失败! (耗时 {duration:.0f} 秒)")
+                    return {
+                        "success": False,
+                        "status": "FAILURE",
+                        "message": "构建失败",
+                        "build_number": actual_build_number,
+                        "queue_item_number": queue_item_number,
+                        "duration": duration,
+                        "url": result["url"],
+                        "console_output": console_output,
+                    }
+                elif build_result == "ABORTED":
+                    print(f"⚠️  构建被中止! (耗时 {duration:.0f} 秒)")
+                    return {
+                        "success": False,
+                        "status": "ABORTED",
+                        "message": "构建被中止",
+                        "build_number": actual_build_number,
+                        "queue_item_number": queue_item_number,
+                        "duration": duration,
+                        "url": result["url"],
+                        "console_output": console_output,
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "status": build_result or "UNKNOWN",
+                        "message": f"构建结束，状态: {build_result}",
+                        "build_number": actual_build_number,
+                        "queue_item_number": queue_item_number,
+                        "duration": duration,
+                        "url": result["url"],
+                        "console_output": console_output,
+                    }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "构建失败"),
+                    "build_number": actual_build_number,
+                    "queue_item_number": queue_item_number,
+                }
+
+        except Exception as e:
+            return {"success": False, "error": f"构建过程出错: {str(e)}"}
+
+    def trigger_build_and_wait_result(
+        self, job_name, parameters=None, wait_timeout=1800, use_queue_api=True
+    ):
+        """
+        触发构建并等待完成，返回构建结果
+        支持队列API和传统方法两种方式
+
+        Args:
+            job_name: 任务名称
+            parameters: 构建参数
+            wait_timeout: 等待超时时间（秒）
+            use_queue_api: 是否使用队列API方法（推荐，解决并发问题）
+
+        Returns:
+            dict: 包含构建结果的字典
+        """
+        if use_queue_api:
+            # 使用改进的队列API方法
+            return self.trigger_build_and_wait_result_improved(
+                job_name, parameters, wait_timeout
+            )
+        else:
+            # 使用传统的方法（可能在并发情况下有序列号冲突问题）
+            return self._trigger_build_and_wait_result_legacy(
+                job_name, parameters, wait_timeout
+            )
+
+    def _trigger_build_and_wait_result_legacy(
+        self, job_name, parameters=None, wait_timeout=1800
+    ):
+        """
+        传统的触发构建并等待完成方法（可能存在并发问题）
+
+        Args:
+            job_name: 任务名称
+            parameters: 构建参数
+            wait_timeout: 等待超时时间（秒）
+
+        Returns:
+            dict: 包含构建结果的字典
+        """
+        try:
+            # 检查任务是否存在
+            if not self.server.job_exists(job_name):
+                return {"success": False, "error": f'Jenkins 任务 "{job_name}" 不存在'}
+
+            print(f"🚀 开始触发构建任务: {job_name} (传统方法)")
 
             # 获取触发前的构建号
             current_build_number = self.get_current_build_number(job_name)
@@ -863,6 +1262,122 @@ class JenkinsUploadBuilder:
         except Exception as e:
             return {"success": False, "error": f"构建过程出错: {str(e)}"}
 
+    def _try_jenkins_library_method(self, job_name, file_path, parameters, max_wait):
+        """
+        尝试使用Jenkins Python库方法获取队列项编号
+
+        Args:
+            job_name: Jenkins任务名称
+            file_path: 文件路径
+            parameters: 构建参数
+            max_wait: 最大等待时间
+
+        Returns:
+            dict: 构建结果
+        """
+        try:
+            # 使用Jenkins库重新触发构建以获取队列项编号
+            if parameters:
+                queue_item_number = self.server.build_job(job_name, parameters)
+            else:
+                queue_item_number = self.server.build_job(job_name)
+
+            if queue_item_number:
+                print(f"✅ 通过Jenkins库获取队列项编号: {queue_item_number}")
+                print(
+                    f"🔗 队列API: {self.jenkins_url}/queue/item/{queue_item_number}/api/json"
+                )
+
+                # 使用队列API等待构建开始
+                actual_build_number = self.wait_for_build_start_by_queue(
+                    queue_item_number, max_wait
+                )
+
+                if actual_build_number:
+                    build_info = self.server.get_build_info(
+                        job_name, actual_build_number
+                    )
+                    return {
+                        "success": True,
+                        "message": "构建触发成功（Jenkins库+队列API）",
+                        "build_number": actual_build_number,
+                        "queue_item_number": queue_item_number,
+                        "build_url": build_info["url"],
+                        "uploaded_file": str(file_path),
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": "Jenkins库方法：等待构建开始超时",
+                        "queue_item_number": queue_item_number,
+                        "uploaded_file": str(file_path),
+                    }
+            else:
+                print("⚠️  Jenkins库方法未返回队列项编号")
+                return self._fallback_to_legacy_method(job_name, file_path, max_wait)
+
+        except Exception as e:
+            print(f"⚠️  Jenkins库方法失败: {e}")
+            return self._fallback_to_legacy_method(job_name, file_path, max_wait)
+
+    def _fallback_to_legacy_method(self, job_name, file_path, max_wait):
+        """
+        回退到改进的传统方法（增加并发保护）
+
+        Args:
+            job_name: Jenkins任务名称
+            file_path: 文件路径
+            max_wait: 最大等待时间
+
+        Returns:
+            dict: 构建结果
+        """
+        print("🔄 回退到改进的传统方法...")
+
+        # 获取当前构建号，增加重试机制
+        for retry in range(3):
+            try:
+                current_build_number = self.get_current_build_number(job_name)
+                expected_build_number = (current_build_number or 0) + 1
+                print(
+                    f"📋 尝试 {retry + 1}/3: 当前构建号 {current_build_number}, 期望构建号 {expected_build_number}"
+                )
+
+                # 等待构建开始，使用改进的方法
+                actual_build_number = self.wait_for_build_start_improved(
+                    job_name, expected_build_number, max_wait
+                )
+
+                if actual_build_number:
+                    build_info = self.server.get_build_info(
+                        job_name, actual_build_number
+                    )
+                    return {
+                        "success": True,
+                        "message": f"构建触发成功（传统方法，重试{retry + 1}次）",
+                        "build_number": actual_build_number,
+                        "build_url": build_info["url"],
+                        "uploaded_file": str(file_path),
+                    }
+                else:
+                    print(f"⚠️  重试 {retry + 1}/3 失败，等待构建开始超时")
+                    if retry < 2:  # 不是最后一次重试
+                        print("⏳ 等待5秒后重试...")
+                        time.sleep(5)
+
+            except Exception as e:
+                print(f"⚠️  重试 {retry + 1}/3 失败: {e}")
+                if retry < 2:  # 不是最后一次重试
+                    print("⏳ 等待5秒后重试...")
+                    time.sleep(5)
+
+        # 所有重试都失败了
+        return {
+            "success": False,
+            "message": "所有方法都失败：无法获取构建号",
+            "uploaded_file": str(file_path),
+        }
+
 
 def prepare_example_context():
     """准备示例构建上下文（如果不存在）"""
@@ -916,7 +1431,7 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 使用默认配置
+  # 使用默认配置（推荐，使用队列API解决并发问题）
   python3 jenkins_upload_build.py
   
   # 自定义Jenkins配置
@@ -927,6 +1442,12 @@ def parse_arguments():
   
   # 控制构建选项
   python3 jenkins_upload_build.py --no-monitor --no-logs --no-cleanup
+  
+  # 使用传统方法（不推荐，可能在并发情况下有问题）
+  python3 jenkins_upload_build.py --use-legacy-method
+  
+  # 自定义队列API超时时间
+  python3 jenkins_upload_build.py --queue-api-timeout 180
         """,
     )
 
@@ -972,6 +1493,11 @@ def parse_arguments():
         choices=["version-build", "latest", "timestamp"],
         help="镜像标签策略 (默认: version-build)",
     )
+    params_group.add_argument(
+        "--build-unique-id",
+        default="",
+        help="构建唯一标识符 (默认: 留空让Jenkins自动生成)",
+    )
 
     # 构建选项
     options_group = parser.add_argument_group("构建选项")
@@ -989,6 +1515,20 @@ def parse_arguments():
     )
     options_group.add_argument(
         "--quiet", action="store_true", help="静默模式，减少输出信息"
+    )
+    options_group.add_argument(
+        "--use-legacy-method",
+        action="store_true",
+        help="使用传统方法触发构建（可能在并发情况下有序列号冲突问题）",
+    )
+    options_group.add_argument(
+        "--queue-api-timeout",
+        type=int,
+        default=120,
+        help="队列API等待超时时间（秒，默认120）",
+    )
+    options_group.add_argument(
+        "--debug", action="store_true", help="启用调试模式，显示详细的调试信息"
     )
 
     # 其他选项
@@ -1029,11 +1569,19 @@ def merge_config(args, file_config=None):
     job_name = args.job_name
     source_dir = args.source_dir
 
+    # 生成唯一ID（如果用户没有提供）
+    unique_id = args.build_unique_id
+    if not unique_id or unique_id.strip() == "":
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        uuid_part = str(uuid.uuid4())[:8]
+        unique_id = f"{timestamp}-{uuid_part}"
+
     build_params = {
         "APP_NAME": args.app_name,
         "APP_VERSION": args.app_version,
         "BUILD_CONTEXT": args.build_context or args.source_dir,
         "IMAGE_TAG_STRATEGY": args.image_tag_strategy,
+        "BUILD_UNIQUE_ID": unique_id,  # 现在肯定有值了
     }
 
     build_options = {
@@ -1042,6 +1590,9 @@ def merge_config(args, file_config=None):
         "monitor_build": not args.no_monitor,
         "show_build_logs": not args.no_logs,
         "verbose": not args.quiet,
+        "use_queue_api": not args.use_legacy_method,
+        "queue_api_timeout": args.queue_api_timeout,
+        "debug": args.debug,
     }
 
     # 如果有配置文件，覆盖相应配置
@@ -1075,6 +1626,7 @@ def generate_example_config():
             "APP_VERSION": "1.0.0",
             "BUILD_CONTEXT": "example_direct_upload_test",
             "IMAGE_TAG_STRATEGY": "version-build",
+            "BUILD_UNIQUE_ID": "",
         },
         "build_options": {
             "auto_create_example": True,
@@ -1082,6 +1634,8 @@ def generate_example_config():
             "monitor_build": True,
             "show_build_logs": True,
             "verbose": True,
+            "use_queue_api": True,
+            "queue_api_timeout": 120,
         },
     }
 
@@ -1127,6 +1681,12 @@ def main():
         print(f"源目录: {source_dir}")
         print(f"应用名称: {build_params['APP_NAME']}")
         print(f"应用版本: {build_params['APP_VERSION']}")
+        print(f"构建唯一ID: {build_params['BUILD_UNIQUE_ID']}")
+        print(
+            f"构建方法: {'队列API方法（推荐）' if build_options['use_queue_api'] else '传统方法'}"
+        )
+        if build_options["use_queue_api"]:
+            print(f"队列API超时: {build_options['queue_api_timeout']} 秒")
 
     try:
         # 创建 Jenkins 构建器
@@ -1198,8 +1758,22 @@ def main():
 
         # 上传文件并触发构建
         if not args.quiet:
-            print(f"\n🚀 上传文件并触发构建...")
-        result = builder.upload_and_build(job_name, archive_path, build_params)
+            method_desc = (
+                "队列API方法" if build_options["use_queue_api"] else "传统方法"
+            )
+            print(f"\n🚀 上传文件并触发构建（{method_desc}）...")
+
+        if build_options["use_queue_api"]:
+            # 使用队列API方法（推荐，解决并发构建序列号冲突问题）
+            result = builder.upload_and_build_with_queue_api(
+                job_name,
+                archive_path,
+                build_params,
+                max_wait=build_options["queue_api_timeout"],
+            )
+        else:
+            # 使用传统方法（可能在并发情况下有序列号冲突问题）
+            result = builder.upload_and_build(job_name, archive_path, build_params)
 
         # 清理临时文件
         if build_options["auto_cleanup"]:
@@ -1219,9 +1793,16 @@ def main():
                 print(f"\n✅ {result['message']}")
 
             build_number = result.get("build_number")
+            queue_item_number = result.get("queue_item_number")
+
             if build_number:
                 if not args.quiet:
                     print(f"🔗 构建链接: {result.get('build_url', 'N/A')}")
+                    if queue_item_number:
+                        print(f"📋 队列项编号: {queue_item_number}")
+                        print(
+                            f"🔗 队列API: {jenkins_config['url']}/queue/item/{queue_item_number}/api/json"
+                        )
 
                 # 监控构建状态
                 if build_options["monitor_build"]:
