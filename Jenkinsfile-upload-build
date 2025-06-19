@@ -288,6 +288,10 @@ except Exception as e:
                         echo "🏗️  构建配置"
                         echo "构建平台: ${BUILD_PLATFORM}"
                         
+                        # 提取平台架构名称（去掉 linux/ 前缀）
+                        PLATFORM_ARCH=$(echo "${BUILD_PLATFORM}" | sed 's/linux\\///')
+                        echo "平台架构: ${PLATFORM_ARCH}"
+                        
                         # 显示 Kaniko 版本
                         /kaniko/executor version
                         
@@ -296,14 +300,14 @@ except Exception as e:
                         ls -la ${BUILD_CONTEXT_PATH}/
                         
                         # 执行镜像构建和推送
-                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
                         echo "目标平台: ${BUILD_PLATFORM}"
                         
                         /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
-                            --destination=${IMAGE_NAME}:${IMAGE_TAG} \\
-                            --destination=${IMAGE_NAME}:latest \\
+                            --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
+                            --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
                             --custom-platform=${BUILD_PLATFORM} \\
                             --cache=true \\
                             --cache-ttl=24h \\
@@ -311,8 +315,8 @@ except Exception as e:
                         
                         echo "✅ 镜像构建并推送完成"
                         echo "📦 推送的镜像:"
-                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG} (${BUILD_PLATFORM})"
-                        echo "   - ${IMAGE_NAME}:latest (${BUILD_PLATFORM})"
+                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
+                        echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
                     '''
                 }
                 }
@@ -328,14 +332,17 @@ except Exception as e:
                     
                     echo "📋 镜像推送验证:"
                     sh """
+                        # 提取平台架构名称
+                        PLATFORM_ARCH=\$(echo "${platform}" | sed 's/linux\\///')
+                        
                         echo "仓库地址: ${HARBOR_REGISTRY}"
                         echo "项目: ${HARBOR_PROJECT}"
-                        echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}"
+                        echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}-\${PLATFORM_ARCH}"
                         echo "平台: ${platform}"
                         
                         echo "推送的镜像:"
-                        echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG} (${platform})"
-                        echo "  📦 ${IMAGE_NAME}:latest (${platform})"
+                        echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG}-\${PLATFORM_ARCH} (${platform})"
+                        echo "  📦 ${IMAGE_NAME}:latest-\${PLATFORM_ARCH} (${platform})"
                     """
                     
                     // 可以添加 Harbor API 调用来验证镜像
@@ -354,10 +361,11 @@ except Exception as e:
         success {
             script {
                 def platform = params.BUILD_PLATFORM
+                def platformArch = platform.replace('linux/', '')
                 
                 echo "🎉 构建成功!"
-                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG} (${platform})"
-                echo "📦 Latest 镜像: ${IMAGE_NAME}:latest (${platform})"
+                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+                echo "📦 Latest 镜像: ${IMAGE_NAME}:latest-${platformArch}"
                 
                 // 可以在这里添加成功通知，比如发送到企业微信、钉钉等
                 // notifySuccess()
