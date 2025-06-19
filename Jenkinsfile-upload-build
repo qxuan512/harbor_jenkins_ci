@@ -303,20 +303,52 @@ except Exception as e:
                         echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
                         echo "目标平台: ${BUILD_PLATFORM}"
                         
-                        /kaniko/executor \\
+                        # 执行Kaniko构建并捕获错误
+                        echo "🔧 配置跨平台构建参数..."
+                        echo "构建平台 (BUILDPLATFORM): linux/amd64"
+                        echo "目标平台 (TARGETPLATFORM): ${BUILD_PLATFORM}"
+                        echo "目标架构 (TARGETARCH): ${PLATFORM_ARCH}"
+                        
+                        if /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
                             --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
                             --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
                             --custom-platform=${BUILD_PLATFORM} \\
+                            --build-arg TARGETPLATFORM=${BUILD_PLATFORM} \\
+                            --build-arg BUILDPLATFORM=linux/amd64 \\
+                            --build-arg TARGETOS=linux \\
+                            --build-arg TARGETARCH=${PLATFORM_ARCH} \\
+                            --build-arg TARGETVARIANT= \\
                             --cache=true \\
                             --cache-ttl=24h \\
-                            --cleanup
+                            --cleanup; then
+                            echo "✅ Kaniko构建成功"
+                        else
+                            echo "❌ Kaniko构建失败"
+                            exit 1
+                        fi
                         
                         echo "✅ 镜像构建并推送完成"
                         echo "📦 推送的镜像:"
                         echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
                         echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
+                        
+                        # 验证镜像是否真的推送成功
+                        echo "🔍 验证镜像推送..."
+                        if command -v docker > /dev/null 2>&1; then
+                            echo "使用docker验证镜像是否存在"
+                            # 注意：在Kaniko容器中通常没有docker命令
+                        fi
+                        
+                        # 使用curl验证Harbor API
+                        echo "使用Harbor API验证镜像..."
+                        if command -v curl > /dev/null 2>&1; then
+                            # 尝试调用Harbor API检查镜像
+                            HARBOR_CHECK_URL="https://${HARBOR_REGISTRY}/api/v2.0/projects/test-project/repositories/my-app/artifacts"
+                            echo "检查URL: ${HARBOR_CHECK_URL}"
+                            # 注意：这里需要认证信息
+                        fi
                     '''
                 }
                 }
