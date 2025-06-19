@@ -348,12 +348,12 @@ def generateImageTag() {
     
     switch(strategy) {
         case 'version-build':
-            return "${params.APP_VERSION}-${BUILD_NUMBER}"
+            return "${params.APP_VERSION}"
         case 'timestamp':
             return "${params.APP_VERSION}-${new Date().format('yyyyMMdd-HHmmss')}"
         case 'latest':
             return 'latest'
         default:
-            return "${params.APP_VERSION}-${BUILD_NUMBER}"
+            return "${params.APP_VERSION}"
     }
 } 
