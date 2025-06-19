@@ -37,6 +37,10 @@ spec:
         string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
         string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
         choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
+        // 构建平台参数
+        choice(name: 'BUILD_PLATFORM', 
+               choices: ['linux/amd64', 'linux/arm64'], 
+               description: '构建平台选择')
         // 唯一ID参数，确保每个构建job的唯一性
         string(name: 'BUILD_UNIQUE_ID', defaultValue: '', description: '构建唯一标识符 (可选，用于确保构建的唯一性，留空则自动生成)')
         // 添加文件上传参数
@@ -57,6 +61,9 @@ spec:
         // 构建配置
         DOCKERFILE_PATH = "${params.BUILD_CONTEXT}/Dockerfile"
         BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
+        
+        // 平台配置
+        BUILD_PLATFORM = "${params.BUILD_PLATFORM}"
     }
 
     stages {
@@ -239,13 +246,21 @@ except Exception as e:
                     }
                     env.ACTUAL_UNIQUE_ID = uniqueId
                     
-                    echo "应用名称: ${params.APP_NAME}"
-                    echo "应用版本: ${params.APP_VERSION}" 
-                    echo "构建唯一ID: ${uniqueId}"
-                    echo "镜像名称: ${IMAGE_NAME}"
-                    echo "镜像标签: ${IMAGE_TAG}"
-                    echo "Harbor 仓库: ${HARBOR_REGISTRY}"
-                    echo "项目: ${HARBOR_PROJECT}"
+                    // 处理平台配置
+                    def platform = params.BUILD_PLATFORM
+                    
+                    echo "🏗️  构建平台配置:"
+                    echo "   选择的平台: ${platform}"
+                    
+                    echo "📋 构建配置信息:"
+                    echo "   应用名称: ${params.APP_NAME}"
+                    echo "   应用版本: ${params.APP_VERSION}" 
+                    echo "   构建唯一ID: ${uniqueId}"
+                    echo "   镜像名称: ${IMAGE_NAME}"
+                    echo "   镜像标签: ${IMAGE_TAG}"
+                    echo "   Harbor 仓库: ${HARBOR_REGISTRY}"
+                    echo "   项目: ${HARBOR_PROJECT}"
+                    echo "   构建平台: ${platform}"
                     
                     // 显示构建信息
                     sh """
@@ -257,6 +272,7 @@ except Exception as e:
                         echo "Jenkins URL: ${JENKINS_URL}"
                         echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
                         echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
+                        echo "构建平台: ${platform}"
                     """
                 }
             }
@@ -265,8 +281,12 @@ except Exception as e:
         stage("使用 Kaniko 构建并推送镜像") {
             steps {
                 container(name: 'kaniko', shell: '/busybox/sh') {
+                                    script {
+                    echo "🚀 开始镜像构建"
+                    
                     sh '''#!/busybox/sh
-                        echo "🚀 开始使用 Kaniko 构建 Docker 镜像"
+                        echo "🏗️  构建配置"
+                        echo "构建平台: ${BUILD_PLATFORM}"
                         
                         # 显示 Kaniko 版本
                         /kaniko/executor version
@@ -277,21 +297,24 @@ except Exception as e:
                         
                         # 执行镜像构建和推送
                         echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "目标平台: ${BUILD_PLATFORM}"
                         
                         /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
                             --destination=${IMAGE_NAME}:${IMAGE_TAG} \\
                             --destination=${IMAGE_NAME}:latest \\
+                            --custom-platform=${BUILD_PLATFORM} \\
                             --cache=true \\
                             --cache-ttl=24h \\
                             --cleanup
                         
                         echo "✅ 镜像构建并推送完成"
                         echo "📦 推送的镜像:"
-                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}"
-                        echo "   - ${IMAGE_NAME}:latest"
+                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG} (${BUILD_PLATFORM})"
+                        echo "   - ${IMAGE_NAME}:latest (${BUILD_PLATFORM})"
                     '''
+                }
                 }
             }
         }
@@ -301,16 +324,22 @@ except Exception as e:
                 script {
                     echo "🔍 验证镜像是否成功推送到 Harbor"
                     
-                    // 这里可以添加验证逻辑，比如调用 Harbor API 检查镜像是否存在
+                    def platform = params.BUILD_PLATFORM
+                    
+                    echo "📋 镜像推送验证:"
                     sh """
-                        echo "镜像推送验证:"
                         echo "仓库地址: ${HARBOR_REGISTRY}"
                         echo "项目: ${HARBOR_PROJECT}"
                         echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}"
+                        echo "平台: ${platform}"
                         
-                        # 可以添加 Harbor API 调用来验证镜像
-                        # curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
+                        echo "推送的镜像:"
+                        echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG} (${platform})"
+                        echo "  📦 ${IMAGE_NAME}:latest (${platform})"
                     """
+                    
+                    // 可以添加 Harbor API 调用来验证镜像
+                    // curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
                 }
             }
         }
@@ -324,8 +353,11 @@ except Exception as e:
         }
         success {
             script {
+                def platform = params.BUILD_PLATFORM
+                
                 echo "🎉 构建成功!"
-                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG}"
+                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG} (${platform})"
+                echo "📦 Latest 镜像: ${IMAGE_NAME}:latest (${platform})"
                 
                 // 可以在这里添加成功通知，比如发送到企业微信、钉钉等
                 // notifySuccess()
