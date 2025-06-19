@@ -292,10 +292,8 @@ except Exception as e:
                         PLATFORM_ARCH=$(echo "${BUILD_PLATFORM}" | sed 's/linux\\///')
                         echo "平台架构: ${PLATFORM_ARCH}"
                         
-                        # 显示 Kaniko 版本和平台信息
+                        # 显示 Kaniko 版本
                         /kaniko/executor version
-                        echo "当前执行环境架构: $(uname -m)"
-                        echo "目标构建平台: ${BUILD_PLATFORM}"
                         
                         # 显示构建上下文
                         echo "📂 构建上下文内容:"
@@ -305,19 +303,12 @@ except Exception as e:
                         echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
                         echo "目标平台: ${BUILD_PLATFORM}"
                         
-                        # Set DOCKER_BUILDKIT for better platform handling
-                        export DOCKER_BUILDKIT=1
-                        
                         /kaniko/executor \\
                             --dockerfile=${DOCKERFILE_PATH} \\
                             --context=${BUILD_CONTEXT_PATH} \\
                             --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
                             --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
                             --custom-platform=${BUILD_PLATFORM} \\
-                            --build-arg BUILDPLATFORM=${BUILD_PLATFORM} \\
-                            --build-arg TARGETPLATFORM=${BUILD_PLATFORM} \\
-                            --build-arg TARGETOS=linux \\
-                            --build-arg TARGETARCH=${PLATFORM_ARCH} \\
                             --cache=true \\
                             --cache-ttl=24h \\
                             --cleanup
