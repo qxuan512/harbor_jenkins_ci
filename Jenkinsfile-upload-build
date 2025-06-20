@@ -37,10 +37,10 @@ spec:
         string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
         string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
         choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
-        // 构建平台参数
-        choice(name: 'BUILD_PLATFORM', 
-               choices: ['linux/amd64', 'linux/arm64'], 
-               description: '构建平台选择')
+        // 构建平台参数 - 支持多平台构建
+        choice(name: 'BUILD_PLATFORMS', 
+               choices: ['linux/amd64', 'linux/arm64', 'linux/amd64,linux/arm64'], 
+               description: '构建平台选择 (支持多平台并行构建)')
         // 唯一ID参数，确保每个构建job的唯一性
         string(name: 'BUILD_UNIQUE_ID', defaultValue: '', description: '构建唯一标识符 (可选，用于确保构建的唯一性，留空则自动生成)')
         // 添加文件上传参数
@@ -63,7 +63,8 @@ spec:
         BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
         
         // 平台配置
-        BUILD_PLATFORM = "${params.BUILD_PLATFORM}"
+        BUILD_PLATFORMS = "${params.BUILD_PLATFORMS}"
+        PLATFORMS_LIST = parsePlatforms("${params.BUILD_PLATFORMS}")
     }
 
     stages {
@@ -247,10 +248,21 @@ except Exception as e:
                     env.ACTUAL_UNIQUE_ID = uniqueId
                     
                     // 处理平台配置
-                    def platform = params.BUILD_PLATFORM
+                    def platforms = params.BUILD_PLATFORMS.split(',')
+                    def platformsInfo = []
                     
-                    echo "🏗️  构建平台配置:"
-                    echo "   选择的平台: ${platform}"
+                    echo "🏗️  多平台构建配置:"
+                    echo "   选择的平台: ${params.BUILD_PLATFORMS}"
+                    echo "   平台数量: ${platforms.length}"
+                    
+                    for (platform in platforms) {
+                        def cleanPlatform = platform.trim()
+                        platformsInfo.add(cleanPlatform)
+                        echo "   - ${cleanPlatform}"
+                    }
+                    
+                    env.PLATFORM_LIST = platformsInfo.join(',')
+                    env.IS_MULTI_PLATFORM = (platforms.length > 1).toString()
                     
                     echo "📋 构建配置信息:"
                     echo "   应用名称: ${params.APP_NAME}"
@@ -260,7 +272,8 @@ except Exception as e:
                     echo "   镜像标签: ${IMAGE_TAG}"
                     echo "   Harbor 仓库: ${HARBOR_REGISTRY}"
                     echo "   项目: ${HARBOR_PROJECT}"
-                    echo "   构建平台: ${platform}"
+                    echo "   构建平台: ${env.PLATFORM_LIST}"
+                    echo "   多平台构建: ${env.IS_MULTI_PLATFORM}"
                     
                     // 显示构建信息
                     sh """
@@ -272,79 +285,102 @@ except Exception as e:
                         echo "Jenkins URL: ${JENKINS_URL}"
                         echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
                         echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
-                        echo "构建平台: ${platform}"
+                        echo "构建平台: ${env.PLATFORM_LIST}"
+                        echo "多平台模式: ${env.IS_MULTI_PLATFORM}"
                     """
                 }
             }
         }
 
-        stage("使用 Kaniko 构建并推送镜像") {
+        stage("多平台镜像构建") {
             steps {
-                container(name: 'kaniko', shell: '/busybox/sh') {
-                                    script {
-                    echo "🚀 开始镜像构建"
+                script {
+                    def platforms = env.PLATFORM_LIST.split(',')
+                    def parallelBuilds = [:]
                     
-                    sh '''#!/busybox/sh
-                        echo "🏗️  构建配置"
-                        echo "构建平台: ${BUILD_PLATFORM}"
+                    // 为每个平台创建并行构建任务
+                    for (platform in platforms) {
+                        def cleanPlatform = platform.trim()
+                        def platformArch = cleanPlatform.replace('linux/', '')
                         
-                        # 提取平台架构名称（去掉 linux/ 前缀）
-                        PLATFORM_ARCH=$(echo "${BUILD_PLATFORM}" | sed 's/linux\\///')
-                        echo "平台架构: ${PLATFORM_ARCH}"
-                        
-                        # 显示 Kaniko 版本
-                        /kaniko/executor version
-                        
-                        # 显示构建上下文
-                        echo "📂 构建上下文内容:"
-                        ls -la ${BUILD_CONTEXT_PATH}/
-                        
-                        # 执行镜像构建和推送
-                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
-                        echo "目标平台: ${BUILD_PLATFORM}"
-                        
-                        /kaniko/executor \\
-                            --dockerfile=${DOCKERFILE_PATH} \\
-                            --context=${BUILD_CONTEXT_PATH} \\
-                            --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
-                            --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
-                            --customPlatform=${BUILD_PLATFORM} \\
-                            --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
-                            --cache=true \\
-                            --cache-ttl=24h \\
-                            --cleanup
-                        
-                        echo "✅ 镜像构建并推送完成"
-                        echo "📦 推送的镜像:"
-                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
-                        echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
-                    '''
-                }
+                        parallelBuilds["构建 ${platformArch}"] = {
+                            container(name: 'kaniko', shell: '/busybox/sh') {
+                                echo "🚀 开始构建 ${cleanPlatform} 平台镜像"
+                                
+                                sh """#!/busybox/sh
+                                    echo "🏗️  构建配置 - ${cleanPlatform}"
+                                    echo "平台架构: ${platformArch}"
+                                    
+                                    # 显示 Kaniko 版本
+                                    /kaniko/executor version
+                                    
+                                    # 显示构建上下文
+                                    echo "📂 构建上下文内容:"
+                                    ls -la ${BUILD_CONTEXT_PATH}/
+                                    
+                                    # 执行镜像构建和推送
+                                    echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+                                    echo "目标平台: ${cleanPlatform}"
+                                    
+                                    /kaniko/executor \\
+                                        --dockerfile=${DOCKERFILE_PATH} \\
+                                        --context=${BUILD_CONTEXT_PATH} \\
+                                        --destination=${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} \\
+                                        --destination=${IMAGE_NAME}:latest-${platformArch} \\
+                                        --customPlatform=${cleanPlatform} \\
+                                        --build-arg=TARGETARCH=${platformArch} \\
+                                        --cache=true \\
+                                        --cache-ttl=24h \\
+                                        --cleanup
+                                    
+                                    echo "✅ ${cleanPlatform} 平台镜像构建并推送完成"
+                                    echo "📦 推送的镜像:"
+                                    echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} (${cleanPlatform})"
+                                    echo "   - ${IMAGE_NAME}:latest-${platformArch} (${cleanPlatform})"
+                                """
+                            }
+                        }
+                    }
+                    
+                    // 并行执行所有平台的构建
+                    echo "🔄 开始并行构建 ${platforms.length} 个平台的镜像..."
+                    parallel parallelBuilds
+                    echo "✅ 所有平台镜像构建完成"
                 }
             }
         }
+
+
 
         stage("验证镜像推送") {
             steps {
                 script {
-                    echo "🔍 验证镜像是否成功推送到 Harbor"
+                    echo "🔍 验证多平台镜像是否成功推送到 Harbor"
                     
-                    def platform = params.BUILD_PLATFORM
+                    def platforms = env.PLATFORM_LIST.split(',')
                     
-                    echo "📋 镜像推送验证:"
+                    echo "📋 多平台镜像推送验证:"
                     sh """
-                        # 提取平台架构名称
-                        PLATFORM_ARCH=\$(echo "${platform}" | sed 's/linux\\///')
-                        
                         echo "仓库地址: ${HARBOR_REGISTRY}"
                         echo "项目: ${HARBOR_PROJECT}"
-                        echo "镜像: ${params.APP_NAME}:${IMAGE_TAG}-\${PLATFORM_ARCH}"
-                        echo "平台: ${platform}"
-                        
-                        echo "推送的镜像:"
-                        echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG}-\${PLATFORM_ARCH} (${platform})"
-                        echo "  📦 ${IMAGE_NAME}:latest-\${PLATFORM_ARCH} (${platform})"
+                        echo "应用名称: ${params.APP_NAME}"
+                        echo "镜像标签: ${IMAGE_TAG}"
+                        echo "构建平台数量: ${platforms.length}"
+                        echo ""
+                        echo "推送的镜像列表:"
                     """
+                    
+                    for (platform in platforms) {
+                        def cleanPlatform = platform.trim()
+                        def platformArch = cleanPlatform.replace('linux/', '')
+                        
+                        sh """
+                            echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} (${cleanPlatform})"
+                            echo "  📦 ${IMAGE_NAME}:latest-${platformArch} (${cleanPlatform})"
+                        """
+                    }
+                    
+
                     
                     // 可以添加 Harbor API 调用来验证镜像
                     // curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
@@ -361,12 +397,18 @@ except Exception as e:
         }
         success {
             script {
-                def platform = params.BUILD_PLATFORM
-                def platformArch = platform.replace('linux/', '')
+                def platforms = env.PLATFORM_LIST.split(',')
                 
-                echo "🎉 构建成功!"
-                echo "📦 镜像已推送到: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
-                echo "📦 Latest 镜像: ${IMAGE_NAME}:latest-${platformArch}"
+                echo "🎉 多平台构建成功!"
+                echo "📦 构建的平台:"
+                
+                for (platform in platforms) {
+                    def cleanPlatform = platform.trim()
+                    def platformArch = cleanPlatform.replace('linux/', '')
+                    echo "  ✅ ${cleanPlatform}: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+                }
+                
+
                 
                 // 可以在这里添加成功通知，比如发送到企业微信、钉钉等
                 // notifySuccess()
@@ -374,7 +416,7 @@ except Exception as e:
         }
         failure {
             script {
-                echo "❌ 构建失败!"
+                echo "❌ 多平台构建失败!"
                 
                 // 可以在这里添加失败通知
                 // notifyFailure()
@@ -397,4 +439,9 @@ def generateImageTag() {
         default:
             return "${params.APP_VERSION}"
     }
+}
+
+// 解析平台列表的函数
+def parsePlatforms(platformsStr) {
+    return platformsStr.split(',').collect { it.trim() }.join(',')
 } 

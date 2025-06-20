@@ -1120,10 +1120,14 @@ def parse_arguments():
 
     # 构建平台参数
     params_group.add_argument(
-        "--build-platform",
+        "--build-platforms",
         default="linux/amd64",
-        choices=["linux/amd64", "linux/arm64"],
-        help="构建平台选择 (默认: linux/amd64)",
+        help="构建平台选择，支持多平台用逗号分隔 (例如: linux/amd64,linux/arm64)",
+    )
+    params_group.add_argument(
+        "--multi-arch",
+        action="store_true",
+        help="快捷选项：构建 AMD64 和 ARM64 双平台镜像",
     )
 
     # 构建选项
@@ -1189,13 +1193,18 @@ def merge_config(args, file_config=None):
         uuid_part = str(uuid.uuid4())[:8]
         unique_id = f"{timestamp}-{uuid_part}"
 
+        # 处理构建平台
+    build_platforms = args.build_platforms
+    if args.multi_arch:
+        build_platforms = "linux/amd64,linux/arm64"
+
     build_params = {
         "APP_NAME": args.app_name,
         "APP_VERSION": args.app_version,
         "BUILD_CONTEXT": args.build_context or args.source_dir,
         "IMAGE_TAG_STRATEGY": args.image_tag_strategy,
         "BUILD_UNIQUE_ID": unique_id,
-        "BUILD_PLATFORM": args.build_platform,
+        "BUILD_PLATFORMS": build_platforms,
     }
 
     build_options = {
@@ -1215,6 +1224,16 @@ def merge_config(args, file_config=None):
         if "source_dir" in file_config:
             source_dir = file_config["source_dir"]
         if "build_params" in file_config:
+            # 特殊处理平台参数
+            if "BUILD_PLATFORMS" in file_config["build_params"]:
+                build_params["BUILD_PLATFORMS"] = file_config["build_params"][
+                    "BUILD_PLATFORMS"
+                ]
+            elif "BUILD_PLATFORM" in file_config["build_params"]:
+                # 兼容旧的单平台配置
+                build_params["BUILD_PLATFORMS"] = file_config["build_params"][
+                    "BUILD_PLATFORM"
+                ]
             build_params.update(file_config["build_params"])
         if "build_options" in file_config:
             build_options.update(file_config["build_options"])
@@ -1237,7 +1256,7 @@ def generate_example_config() -> bool:
             "APP_VERSION": "1.0.0",
             "BUILD_CONTEXT": "example_direct_upload_test",
             "IMAGE_TAG_STRATEGY": "version-build",
-            "BUILD_PLATFORM": "linux/amd64",
+            "BUILD_PLATFORMS": "linux/amd64,linux/arm64",
         },
         "build_options": {
             "auto_create_example": True,
@@ -1247,9 +1266,15 @@ def generate_example_config() -> bool:
             "verbose": True,
         },
         "platform_examples": {
-            "amd64": "linux/amd64",
-            "arm64": "linux/arm64",
-            "note": "BUILD_PLATFORM 只能选择单个平台进行构建",
+            "single_amd64": "linux/amd64",
+            "single_arm64": "linux/arm64",
+            "multi_arch": "linux/amd64,linux/arm64",
+            "note": "BUILD_PLATFORMS 支持单个平台或多个平台用逗号分隔",
+        },
+        "usage_examples": {
+            "single_platform": "python3 jenkins_upload_build.py --build-platforms linux/amd64",
+            "multi_platform": "python3 jenkins_upload_build.py --build-platforms linux/amd64,linux/arm64",
+            "quick_multi_arch": "python3 jenkins_upload_build.py --multi-arch",
         },
     }
 
@@ -1260,8 +1285,14 @@ def generate_example_config() -> bool:
         print(f"✅ 示例配置文件已生成: {config_file}")
         print(f"请编辑此文件后使用: --config-file {config_file}")
         print(f"\n📋 构建平台配置说明:")
-        print(f"   - AMD64 平台: BUILD_PLATFORM='linux/amd64'")
-        print(f"   - ARM64 平台: BUILD_PLATFORM='linux/arm64'")
+        print(f"   - 单个 AMD64 平台: BUILD_PLATFORMS='linux/amd64'")
+        print(f"   - 单个 ARM64 平台: BUILD_PLATFORMS='linux/arm64'")
+        print(f"   - 多平台构建: BUILD_PLATFORMS='linux/amd64,linux/arm64'")
+        print(f"\n🚀 快速使用示例:")
+        print(f"   # 多平台构建（推荐）")
+        print(f"   python3 jenkins_upload_build.py --multi-arch")
+        print(f"   # 单平台构建")
+        print(f"   python3 jenkins_upload_build.py --build-platforms linux/amd64")
         return True
     except Exception as e:
         print(f"❌ 生成配置文件失败: {e}")
@@ -1299,7 +1330,16 @@ def main() -> bool:
         print(f"应用名称: {build_params['APP_NAME']}")
         print(f"应用版本: {build_params['APP_VERSION']}")
         print(f"构建唯一ID: {build_params['BUILD_UNIQUE_ID']}")
-        print(f"构建平台: {build_params['BUILD_PLATFORM']}")
+        print(f"构建平台: {build_params['BUILD_PLATFORMS']}")
+
+        # 显示平台信息
+        platforms = build_params["BUILD_PLATFORMS"].split(",")
+        if len(platforms) > 1:
+            print(f"📋 多平台构建模式:")
+            for platform in platforms:
+                print(f"   - {platform.strip()}")
+        else:
+            print(f"📋 单平台构建模式: {platforms[0].strip()}")
 
     try:
         # 创建 Jenkins 构建器
