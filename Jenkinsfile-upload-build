@@ -308,7 +308,7 @@ except Exception as e:
         }
         
         stage("并行构建执行") {
-            failFast true
+            failFast false  // 改为不快速失败，让一个平台失败时另一个平台可以继续
             parallel {
                 stage('构建 AMD64') {
                     when {
@@ -375,8 +375,7 @@ except Exception as e:
                         echo "   ${IMAGE_NAME}:latest-${platformArch}"
                     }
                     
-                    echo ""
-                    echo "🌐 Harbor: ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                    
                 }
             }
         }
@@ -433,28 +432,35 @@ def parsePlatforms(platformsStr) {
     return platformsStr.split(',').collect { it.trim() }.join(',')
 }
 
-// 构建指定平台镜像的函数
+// 构建指定平台镜像的函数（带重试机制）
 def buildPlatformImage(String platform, String platformArch) {
     container(name: 'kaniko', shell: '/busybox/sh') {
-        sh """#!/busybox/sh
-            # 验证文件
-            if [ ! -f "${DOCKERFILE_PATH}" ]; then
-                echo "❌ Dockerfile 不存在: ${DOCKERFILE_PATH}"
-                exit 1
-            fi
-            
-            # 执行构建
-            /kaniko/executor \\
-                --dockerfile=${DOCKERFILE_PATH} \\
-                --context=${BUILD_CONTEXT_PATH} \\
-                --destination=${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} \\
-                --destination=${IMAGE_NAME}:latest-${platformArch} \\
-                --custom-platform=${platform} \\
-                --build-arg=TARGETARCH=${platformArch} \\
-                --build-arg=BUILDPLATFORM=${platform} \\
-                --cache=true \\
-                --cache-ttl=24h \\
-                --cleanup
-        """
+        // 添加随机延迟以避免并发冲突
+        def delay = new Random().nextInt(10) + 1
+        echo "⏳ ${platformArch} 构建延迟 ${delay} 秒以避免并发冲突..."
+        sleep delay
+        
+        retry(3) {  // 最多重试3次
+            sh """#!/busybox/sh
+                # 验证文件
+                if [ ! -f "${DOCKERFILE_PATH}" ]; then
+                    echo "❌ Dockerfile 不存在: ${DOCKERFILE_PATH}"
+                    exit 1
+                fi
+                
+                # 执行构建
+                /kaniko/executor \\
+                    --dockerfile=${DOCKERFILE_PATH} \\
+                    --context=${BUILD_CONTEXT_PATH} \\
+                    --destination=${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} \\
+                    --destination=${IMAGE_NAME}:latest-${platformArch} \\
+                    --custom-platform=${platform} \\
+                    --build-arg=TARGETARCH=${platformArch} \\
+                    --build-arg=BUILDPLATFORM=${platform} \\
+                    --cache=true \\
+                    --cache-ttl=24h \\
+                    --cleanup
+            """
+        }
     }
 } 
