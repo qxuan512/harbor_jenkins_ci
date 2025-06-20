@@ -435,6 +435,21 @@ class JenkinsUploadBuilder:
             )
             print(f"   构建链接: {build_info.get('url', '')}")
 
+            # 如果构建成功，尝试从日志中提取镜像信息
+            if success:
+                try:
+                    console_output = self.server.get_build_console_output(
+                        job_name, build_number
+                    )
+                    image_info = self._extract_final_images(console_output)
+                    if image_info:
+                        print(f"\n🎯 构建的镜像:")
+                        for image in image_info:
+                            print(f"   {image}")
+                except Exception as e:
+                    # 静默处理镜像信息提取失败
+                    pass
+
             # 尝试获取构建产物信息
             try:
                 artifacts = build_info.get("artifacts", [])
@@ -449,6 +464,37 @@ class JenkinsUploadBuilder:
 
         except Exception as e:
             print(f"⚠️  无法获取详细构建信息: {e}")
+
+    def _extract_final_images(self, console_output):
+        """从构建日志中提取最终构建的镜像列表"""
+        if not console_output:
+            return []
+
+        images = set()
+        lines = console_output.split("\n")
+
+        for line in lines:
+            cleaned_line = self._clean_ansi_sequences(line).strip()
+
+            # 查找 "🎯 构建的镜像:" 后面的镜像地址
+            if "🎯 构建的镜像:" in cleaned_line:
+                # 开始收集后续的镜像地址
+                continue
+
+            # 匹配镜像地址格式
+            if (
+                "registry." in cleaned_line
+                and "/test-project/" in cleaned_line
+                and (":" in cleaned_line)
+                and cleaned_line.strip().startswith("registry.")
+            ):
+                # 清理可能的前缀
+                image_line = cleaned_line.strip()
+                if image_line.startswith("   "):
+                    image_line = image_line[3:].strip()
+                images.add(image_line)
+
+        return sorted(list(images))
 
     def _extract_image_info(self, console_output):
         """从构建日志中提取镜像信息"""

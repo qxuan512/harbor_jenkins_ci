@@ -366,6 +366,17 @@ except Exception as e:
                     }
                     
                     echo "📊 构建完成: ${params.APP_NAME}:${IMAGE_TAG} (${builtPlatforms.size()}平台)"
+                    echo ""
+                    echo "🎯 构建的镜像:"
+                    
+                    for (platform in builtPlatforms) {
+                        def platformArch = platform.replace('linux/', '')
+                        echo "   ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+                        echo "   ${IMAGE_NAME}:latest-${platformArch}"
+                    }
+                    
+                    echo ""
+                    echo "🌐 Harbor: ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
                 }
             }
         }
@@ -379,7 +390,18 @@ except Exception as e:
         }
         success {
             script {
+                def platforms = env.PLATFORM_LIST?.split(',') ?: []
+                def builtPlatforms = []
+                
+                for (platform in platforms) {
+                    def cleanPlatform = platform.trim()
+                    if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                        builtPlatforms.add(cleanPlatform.replace('linux/', ''))
+                    }
+                }
+                
                 echo "🎉 构建成功 - ${params.APP_NAME}:${IMAGE_TAG}"
+                echo "✅ 平台: ${builtPlatforms.join(', ')}"
             }
         }
         failure {
