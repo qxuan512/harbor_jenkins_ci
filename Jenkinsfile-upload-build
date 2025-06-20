@@ -308,7 +308,7 @@ except Exception as e:
                             --context=${BUILD_CONTEXT_PATH} \\
                             --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
                             --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
-                            --customPlatform=${BUILD_PLATFORM} \\
+                            --custom-platform=${BUILD_PLATFORM} \\
                             --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
                             --cache=true \\
                             --cache-ttl=24h \\
@@ -318,6 +318,34 @@ except Exception as e:
                         echo "📦 推送的镜像:"
                         echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
                         echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
+                        
+                        echo ""
+                        echo "🔍 快速查询镜像基本信息..."
+                        # 尝试快速获取镜像大小信息
+                        VERSIONED_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
+                        
+                        # 使用 crane 或其他工具快速查询（如果可用）
+                        if command -v crane >/dev/null 2>&1; then
+                            echo "📊 使用 crane 查询镜像大小..."
+                            SIZE=$(crane manifest $VERSIONED_IMAGE 2>/dev/null | jq -r '.config.size + (.layers[] | .size) // 0' 2>/dev/null | awk '{sum+=$1} END {print sum}' 2>/dev/null)
+                            if [ "$SIZE" != "" ] && [ "$SIZE" != "0" ]; then
+                                echo $SIZE | awk '{
+                                    if ($1 > 1024*1024*1024) {
+                                        printf "💾 估算镜像大小: %.2f GB\\n", $1/(1024*1024*1024)
+                                    } else if ($1 > 1024*1024) {
+                                        printf "💾 估算镜像大小: %.2f MB\\n", $1/(1024*1024)
+                                    } else if ($1 > 1024) {
+                                        printf "💾 估算镜像大小: %.2f KB\\n", $1/1024
+                                    } else {
+                                        printf "💾 估算镜像大小: %d B\\n", $1
+                                    }
+                                }'
+                            else
+                                echo "📊 镜像大小信息将在验证阶段详细显示"
+                            fi
+                        else
+                            echo "📊 镜像大小信息将在验证阶段详细显示"
+                        fi
                     '''
                 }
                 }
