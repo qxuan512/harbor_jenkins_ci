@@ -434,14 +434,20 @@ def parsePlatforms(platformsStr) {
 
 // 构建指定平台镜像的函数（带重试机制）
 def buildPlatformImage(String platform, String platformArch) {
-    container(name: 'kaniko', shell: '/busybox/sh') {
+    container(name: 'kaniko', shell: '/bin/sh') {
         // 添加随机延迟以避免并发冲突
         def delay = new Random().nextInt(10) + 1
         echo "⏳ ${platformArch} 构建延迟 ${delay} 秒以避免并发冲突..."
         sleep delay
         
         retry(3) {  // 最多重试3次
-            sh """#!/busybox/sh
+            sh """#!/bin/sh
+                # 测试shell环境
+                echo "🔍 Testing shell environment..."
+                echo "Current working directory: \$(pwd)"
+                echo "Available shells: \$(ls -la /bin/*sh 2>/dev/null || echo 'No shells found in /bin')"
+                echo "Kaniko executor: \$(ls -la /kaniko/executor)"
+                
                 # 验证文件
                 if [ ! -f "${DOCKERFILE_PATH}" ]; then
                     echo "❌ Dockerfile 不存在: ${DOCKERFILE_PATH}"
