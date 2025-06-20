@@ -344,75 +344,51 @@ class JenkinsUploadBuilder:
                     print(f"🔧 Pipeline阶段: {stage_name}")
                 continue
 
-            # 检测镜像相关的关键信息
-            if any(
-                keyword in cleaned_line
-                for keyword in [
-                    "仓库地址:",
-                    "项目:",
-                    "镜像:",
-                    "镜像已推送到:",
-                    "registry.",
-                    "harbor.",
-                    "/test-project/",
-                    "digest:",
-                    "sha256:",
-                ]
-            ):
-                if "仓库地址:" in cleaned_line:
-                    registry = cleaned_line.split("仓库地址:")[-1].strip()
-                    info_key = f"registry:{registry}"
-                    if info_key not in displayed_info:
-                        print(f"🏢 仓库地址: {registry}")
-                        displayed_info.add(info_key)
-                elif "项目:" in cleaned_line:
-                    project = cleaned_line.split("项目:")[-1].strip()
-                    info_key = f"project:{project}"
-                    if info_key not in displayed_info:
-                        print(f"📁 项目名称: {project}")
-                        displayed_info.add(info_key)
-                elif "镜像:" in cleaned_line and "镜像已推送到:" not in cleaned_line:
-                    image = cleaned_line.split("镜像:")[-1].strip()
-                    info_key = f"image_tag:{image}"
-                    if info_key not in displayed_info:
-                        print(f"🐳 镜像标签: {image}")
-                        displayed_info.add(info_key)
-                elif "镜像已推送到:" in cleaned_line:
-                    image_url = cleaned_line.split("镜像已推送到:")[-1].strip()
-                    info_key = f"image_url:{image_url}"
-                    if info_key not in displayed_info:
-                        print(f"🎯 镜像地址: {image_url}")
-                        displayed_info.add(info_key)
-                elif "digest:" in cleaned_line or "sha256:" in cleaned_line:
-                    digest_info = cleaned_line.strip()
-                    info_key = f"digest:{digest_info}"
-                    if info_key not in displayed_info:
-                        print(f"🔐 镜像摘要: {digest_info}")
-                        displayed_info.add(info_key)
-                else:
-                    print(f"📦 {cleaned_line.strip()}")
-                continue
-
-            # 检测重要的构建步骤
+            # 检测关键构建进度（过滤重复的镜像信息）
             if any(
                 pattern in cleaned_line.lower()
                 for pattern in [
-                    "building docker image",
-                    "pushing to registry",
-                    "build succeeded",
-                    "build failed",
-                    "构建成功",
-                    "构建失败",
-                    "镜像推送验证",
-                    "清理构建环境",
+                    "构建中",
+                    "building",
+                    "pushing",
                     "error:",
                     "warning:",
-                    "✅",
+                ]
+            ) and not any(
+                skip_pattern in cleaned_line
+                for skip_pattern in [
+                    "registry.",
+                    "harbor.",
+                    "/test-project/",
+                    "docker pull",
+                    "镜像已推送到:",
+                    "🎯",
+                    "🔐",
+                    "sha256:",
+                    "digest:",
+                ]
+            ):
+                print(f"📝 {cleaned_line.strip()}")
+                continue
+
+            # 检测重要的构建步骤（去掉重复的成功信息）
+            if any(
+                pattern in cleaned_line.lower()
+                for pattern in [
+                    "build failed",
+                    "构建失败",
+                    "error:",
+                    "warning:",
                     "❌",
-                    "🐳",
-                    "📤",
-                    "🎉",
-                    "🧹",
+                ]
+            ) and not any(
+                skip_pattern in cleaned_line
+                for skip_pattern in [
+                    "registry.",
+                    "harbor.",
+                    "docker pull",
+                    "🎯",
+                    "sha256:",
                 ]
             ):
                 print(f"📝 {cleaned_line.strip()}")

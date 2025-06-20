@@ -323,9 +323,6 @@ except Exception as e:
                         }
                     }
                     post {
-                        success {
-                            echo "✅ AMD64 完成"
-                        }
                         failure {
                             echo "❌ AMD64 失败"
                         }
@@ -345,9 +342,6 @@ except Exception as e:
                         }
                     }
                     post {
-                        success {
-                            echo "✅ ARM64 完成"
-                        }
                         failure {
                             echo "❌ ARM64 失败"
                         }
@@ -371,15 +365,7 @@ except Exception as e:
                         }
                     }
                     
-                    echo "📊 构建完成: ${params.APP_NAME}:${IMAGE_TAG}"
-                    echo "📦 平台: ${builtPlatforms.join(', ')}"
-                    
-                    for (platform in builtPlatforms) {
-                        def platformArch = platform.replace('linux/', '')
-                        echo "   ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
-                    }
-                    
-                    echo "🌐 ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                    echo "📊 构建完成: ${params.APP_NAME}:${IMAGE_TAG} (${builtPlatforms.size()}平台)"
                 }
             }
         }
@@ -393,17 +379,7 @@ except Exception as e:
         }
         success {
             script {
-                def platforms = env.PLATFORM_LIST?.split(',') ?: []
-                def builtCount = 0
-                
-                for (platform in platforms) {
-                    def cleanPlatform = platform.trim()
-                    if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
-                        builtCount++
-                    }
-                }
-                
-                echo "🎉 构建成功 - ${params.APP_NAME}:${IMAGE_TAG} (${builtCount}平台)"
+                echo "🎉 构建成功 - ${params.APP_NAME}:${IMAGE_TAG}"
             }
         }
         failure {
