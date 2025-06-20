@@ -318,16 +318,16 @@ except Exception as e:
                     }
                     steps {
                         script {
-                            echo "🖥️  开始构建 AMD64 镜像"
+                            echo "🖥️  构建 AMD64 镜像"
                             buildPlatformImage('linux/amd64', 'amd64')
                         }
                     }
                     post {
                         success {
-                            echo "✅ AMD64 构建成功: ${IMAGE_NAME}:${IMAGE_TAG}-amd64"
+                            echo "✅ AMD64 完成"
                         }
                         failure {
-                            echo "❌ AMD64 构建失败"
+                            echo "❌ AMD64 失败"
                         }
                     }
                 }
@@ -340,16 +340,16 @@ except Exception as e:
                     }
                     steps {
                         script {
-                            echo "💪 开始构建 ARM64 镜像"
+                            echo "💪 构建 ARM64 镜像"
                             buildPlatformImage('linux/arm64', 'arm64')
                         }
                     }
                     post {
                         success {
-                            echo "✅ ARM64 构建成功: ${IMAGE_NAME}:${IMAGE_TAG}-arm64"
+                            echo "✅ ARM64 完成"
                         }
                         failure {
-                            echo "❌ ARM64 构建失败"
+                            echo "❌ ARM64 失败"
                         }
                     }
                 }
@@ -371,15 +371,15 @@ except Exception as e:
                         }
                     }
                     
-                    echo "📊 构建完成 - ${params.APP_NAME}:${IMAGE_TAG}"
-                    echo "📦 构建平台: ${builtPlatforms.join(', ')}"
-                    echo "🌐 Harbor 仓库: ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                    echo "📊 构建完成: ${params.APP_NAME}:${IMAGE_TAG}"
+                    echo "📦 平台: ${builtPlatforms.join(', ')}"
                     
                     for (platform in builtPlatforms) {
                         def platformArch = platform.replace('linux/', '')
-                        echo "   ✅ ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
-                        echo "   ✅ ${IMAGE_NAME}:latest-${platformArch}"
+                        echo "   ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
                     }
+                    
+                    echo "🌐 ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
                 }
             }
         }
@@ -403,15 +403,12 @@ except Exception as e:
                     }
                 }
                 
-                echo "🎉 构建成功！"
-                echo "📦 ${params.APP_NAME}:${IMAGE_TAG} - ${builtCount} 个平台"
-                echo "🌐 ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                echo "🎉 构建成功 - ${params.APP_NAME}:${IMAGE_TAG} (${builtCount}平台)"
             }
         }
         failure {
             script {
                 echo "❌ 构建失败 - ${params.APP_NAME}:${IMAGE_TAG}"
-                echo "📋 查看日志: ${BUILD_URL}console"
             }
         }
     }
@@ -441,8 +438,6 @@ def parsePlatforms(platformsStr) {
 // 构建指定平台镜像的函数
 def buildPlatformImage(String platform, String platformArch) {
     container(name: 'kaniko', shell: '/busybox/sh') {
-        echo "🔨 构建 ${platform} 镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
-        
         sh """#!/busybox/sh
             # 验证文件
             if [ ! -f "${DOCKERFILE_PATH}" ]; then
