@@ -281,131 +281,45 @@ except Exception as e:
         stage("使用 Kaniko 构建并推送镜像") {
             steps {
                 container(name: 'kaniko', shell: '/busybox/sh') {
-                    script {
-                        echo "🚀 开始镜像构建"
+                                    script {
+                    echo "🚀 开始镜像构建"
+                    
+                    sh '''#!/busybox/sh
+                        echo "🏗️  构建配置"
+                        echo "构建平台: ${BUILD_PLATFORM}"
                         
-                        sh '''#!/busybox/sh
-                            echo "🏗️  构建配置"
-                            echo "构建平台: ${BUILD_PLATFORM}"
-                            
-                            # 提取平台架构名称（去掉 linux/ 前缀）
-                            PLATFORM_ARCH=$(echo "${BUILD_PLATFORM}" | sed 's/linux\\///')
-                            echo "平台架构: ${PLATFORM_ARCH}"
-                            
-                            # 显示 Kaniko 版本
-                            /kaniko/executor version
-                            
-                            # 显示构建上下文
-                            echo "📂 构建上下文内容:"
-                            ls -la ${BUILD_CONTEXT_PATH}/
-                            
-                            # 显示构建上下文大小
-                            echo "📏 构建上下文大小:"
-                            du -sh ${BUILD_CONTEXT_PATH}/
-                            
-                            # 执行镜像构建（不推送，先获取大小信息）
-                            echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
-                            echo "目标平台: ${BUILD_PLATFORM}"
-                            
-                            # 记录构建开始时间
-                            BUILD_START_TIME=$(date +%s)
-                            echo "⏱️  构建开始时间: $(date)"
-                            
-                            # 使用 --no-push 先构建镜像但不推送，以便获取大小信息
-                            echo "🔨 第一阶段：构建镜像（不推送）"
-                            /kaniko/executor \\
-                                --dockerfile=${DOCKERFILE_PATH} \\
-                                --context=${BUILD_CONTEXT_PATH} \\
-                                --no-push \\
-                                --tar-path=/tmp/image.tar \\
-                                --custom-platform=${BUILD_PLATFORM} \\
-                                --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
-                                --cache=true \\
-                                --cache-ttl=24h \\
-                                --verbosity=info
-                            
-                            # 记录构建结束时间
-                            BUILD_END_TIME=$(date +%s)
-                            BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
-                            echo "⏱️  构建完成时间: $(date)"
-                            echo "⏱️  构建耗时: ${BUILD_DURATION} 秒"
-                            
-                            # 检查构建产生的 tar 文件大小
-                            echo ""
-                            echo "📦 ==========================="
-                            echo "📦 镜像构建完成 - 大小信息"
-                            echo "📦 ==========================="
-                            
-                            if [ -f /tmp/image.tar ]; then
-                                TAR_SIZE_BYTES=$(stat -c%s /tmp/image.tar 2>/dev/null || wc -c < /tmp/image.tar)
-                                TAR_SIZE_MB=$((TAR_SIZE_BYTES / 1024 / 1024))
-                                TAR_SIZE_HUMAN=$(du -h /tmp/image.tar | cut -f1)
-                                
-                                echo "📏 镜像 TAR 文件大小:"
-                                echo "   📊 原始大小: ${TAR_SIZE_BYTES} bytes"
-                                echo "   📊 人类可读: ${TAR_SIZE_HUMAN}"
-                                echo "   📊 大约: ${TAR_SIZE_MB} MB"
-                                
-                                # 检查 tar 文件内容以获取更多信息
-                                echo ""
-                                echo "📋 镜像内容分析:"
-                                tar -tvf /tmp/image.tar | head -20 | while read line; do
-                                    echo "   $line"
-                                done
-                                
-                                # 统计层数
-                                LAYER_COUNT=$(tar -tf /tmp/image.tar | grep "layer.tar" | wc -l)
-                                echo "   📊 镜像层数: ${LAYER_COUNT}"
-                                
-                            else
-                                echo "⚠️  未找到镜像 TAR 文件，可能构建失败"
-                                ls -la /tmp/
-                            fi
-                            
-                            echo "📦 ==========================="
-                            echo ""
-                            
-                            # 第二阶段：推送镜像
-                            echo "🚀 第二阶段：推送镜像到仓库"
-                            echo "📤 推送前镜像信息已显示，开始推送..."
-                            
-                            PUSH_START_TIME=$(date +%s)
-                            echo "⏱️  推送开始时间: $(date)"
-                            
-                            /kaniko/executor \\
-                                --dockerfile=${DOCKERFILE_PATH} \\
-                                --context=${BUILD_CONTEXT_PATH} \\
-                                --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
-                                --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
-                                --custom-platform=${BUILD_PLATFORM} \\
-                                --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
-                                --cache=true \\
-                                --cache-ttl=24h \\
-                                --cleanup \\
-                                --verbosity=info
-                            
-                            PUSH_END_TIME=$(date +%s)
-                            PUSH_DURATION=$((PUSH_END_TIME - PUSH_START_TIME))
-                            echo "⏱️  推送完成时间: $(date)"
-                            echo "⏱️  推送耗时: ${PUSH_DURATION} 秒"
-                            
-                            TOTAL_DURATION=$((PUSH_END_TIME - BUILD_START_TIME))
-                            echo "⏱️  总耗时: ${TOTAL_DURATION} 秒"
-                            
-                            echo ""
-                            echo "✅ ================================="
-                            echo "✅ 镜像构建并推送完成"
-                            echo "✅ ================================="
-                            echo "📦 推送的镜像:"
-                            echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
-                            echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
-                            if [ -n "${TAR_SIZE_HUMAN:-}" ]; then
-                                echo "📏 镜像大小: ${TAR_SIZE_HUMAN} (约 ${TAR_SIZE_MB} MB)"
-                            fi
-                            echo "⏱️  构建+推送总耗时: ${TOTAL_DURATION} 秒"
-                            echo "✅ ================================="
-                        '''
-                    }
+                        # 提取平台架构名称（去掉 linux/ 前缀）
+                        PLATFORM_ARCH=$(echo "${BUILD_PLATFORM}" | sed 's/linux\\///')
+                        echo "平台架构: ${PLATFORM_ARCH}"
+                        
+                        # 显示 Kaniko 版本
+                        /kaniko/executor version
+                        
+                        # 显示构建上下文
+                        echo "📂 构建上下文内容:"
+                        ls -la ${BUILD_CONTEXT_PATH}/
+                        
+                        # 执行镜像构建和推送
+                        echo "🔨 开始构建镜像: ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH}"
+                        echo "目标平台: ${BUILD_PLATFORM}"
+                        
+                        /kaniko/executor \\
+                            --dockerfile=${DOCKERFILE_PATH} \\
+                            --context=${BUILD_CONTEXT_PATH} \\
+                            --destination=${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} \\
+                            --destination=${IMAGE_NAME}:latest-${PLATFORM_ARCH} \\
+                            --custom-platform=${BUILD_PLATFORM} \\
+                            --build-arg=TARGETARCH=${PLATFORM_ARCH} \\
+                            --cache=true \\
+                            --cache-ttl=24h \\
+                            --cleanup
+                        
+                        echo "✅ 镜像构建并推送完成"
+                        echo "📦 推送的镜像:"
+                        echo "   - ${IMAGE_NAME}:${IMAGE_TAG}-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
+                        echo "   - ${IMAGE_NAME}:latest-${PLATFORM_ARCH} (${BUILD_PLATFORM})"
+                    '''
+                }
                 }
             }
         }
@@ -430,113 +344,10 @@ except Exception as e:
                         echo "推送的镜像:"
                         echo "  📦 ${IMAGE_NAME}:${IMAGE_TAG}-\${PLATFORM_ARCH} (${platform})"
                         echo "  📦 ${IMAGE_NAME}:latest-\${PLATFORM_ARCH} (${platform})"
-                        
-                        echo ""
-                        echo "🔍 ==============================="
-                        echo "🔍 查询Harbor中的镜像详细信息"
-                        echo "🔍 ==============================="
-                        
-                        # 尝试通过Harbor API查询镜像信息
-                        # 注意：这需要Harbor API v2.0支持，如果失败会优雅处理
-                        echo "📡 尝试查询Harbor API获取镜像详细信息..."
-                        
-                        # 构建API URL
-                        REPO_NAME="${params.APP_NAME}"
-                        TAG_NAME="${IMAGE_TAG}-\${PLATFORM_ARCH}"
-                        API_URL="https://${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/\${REPO_NAME}/artifacts/\${TAG_NAME}"
-                        
-                        echo "API URL: \${API_URL}"
-                        
-                        # 尝试查询镜像信息（如果失败不影响构建）
-                        if command -v curl >/dev/null 2>&1; then
-                            echo "使用curl查询镜像信息..."
-                            
-                            # 尝试不带认证的查询（公开项目）
-                            RESPONSE=\$(curl -s -w "HTTPSTATUS:%{http_code}" "\${API_URL}" 2>/dev/null || echo "HTTPSTATUS:000")
-                            HTTP_STATUS=\$(echo "\$RESPONSE" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
-                            BODY=\$(echo "\$RESPONSE" | sed 's/HTTPSTATUS:[0-9]*\$//')
-                            
-                            echo "HTTP状态码: \${HTTP_STATUS}"
-                            
-                            if [ "\${HTTP_STATUS}" = "200" ] && [ -n "\${BODY}" ]; then
-                                echo "✅ 成功获取镜像信息:"
-                                
-                                # 尝试解析JSON响应获取大小信息
-                                if command -v python3 >/dev/null 2>&1; then
-                                    echo "\${BODY}" | python3 -c "
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    if 'size' in data:
-        size_bytes = data['size']
-        size_mb = size_bytes / (1024 * 1024)
-        size_gb = size_mb / 1024
-        print(f'📏 Harbor中镜像大小:')
-        print(f'   📊 字节: {size_bytes:,} bytes')
-        print(f'   📊 MB: {size_mb:.2f} MB')
-        if size_gb >= 1:
-            print(f'   📊 GB: {size_gb:.2f} GB')
-        
-        if 'push_time' in data:
-            print(f'   ⏰ 推送时间: {data[\"push_time\"]}')
-        
-        if 'digest' in data:
-            print(f'   🔐 摘要: {data[\"digest\"][:32]}...')
-            
-        if 'labels' in data and data['labels']:
-            print(f'   🏷️  标签数量: {len(data[\"labels\"])}')
-            
-    else:
-        print('⚠️  响应中未找到大小信息')
-        print('原始响应:')
-        print(json.dumps(data, indent=2)[:500] + '...' if len(json.dumps(data)) > 500 else json.dumps(data, indent=2))
-        
-except Exception as e:
-    print(f'❌ JSON解析失败: {e}')
-    print('原始响应:')
-    print(sys.stdin.read()[:500] + '...')
-                                    " 2>/dev/null || echo "Python JSON解析失败，显示原始响应前500字符: \${BODY:0:500}"
-                                else
-                                    echo "原始API响应: \${BODY:0:200}..."
-                                fi
-                                
-                            elif [ "\${HTTP_STATUS}" = "401" ] || [ "\${HTTP_STATUS}" = "403" ]; then
-                                echo "⚠️  需要认证或权限不足 (状态码: \${HTTP_STATUS})"
-                                echo "镜像可能在私有项目中，无法通过API获取详细信息"
-                                
-                            elif [ "\${HTTP_STATUS}" = "404" ]; then
-                                echo "❌ 镜像未找到 (状态码: 404)"
-                                echo "可能镜像推送失败或标签不正确"
-                                
-                            else
-                                echo "⚠️  API查询失败 (状态码: \${HTTP_STATUS})"
-                                if [ -n "\${BODY}" ]; then
-                                    echo "响应: \${BODY:0:200}..."
-                                fi
-                            fi
-                        else
-                            echo "⚠️  curl命令不可用，跳过API查询"
-                        fi
-                        
-                        # 也尝试查询latest标签的信息
-                        echo ""
-                        echo "📡 查询latest标签信息..."
-                        LATEST_API_URL="https://${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/\${REPO_NAME}/artifacts/latest-\${PLATFORM_ARCH}"
-                        
-                        if command -v curl >/dev/null 2>&1; then
-                            LATEST_RESPONSE=\$(curl -s -w "HTTPSTATUS:%{http_code}" "\${LATEST_API_URL}" 2>/dev/null || echo "HTTPSTATUS:000")
-                            LATEST_HTTP_STATUS=\$(echo "\$LATEST_RESPONSE" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
-                            
-                            if [ "\${LATEST_HTTP_STATUS}" = "200" ]; then
-                                echo "✅ latest-\${PLATFORM_ARCH} 标签也已成功推送"
-                            else
-                                echo "⚠️  latest-\${PLATFORM_ARCH} 标签状态: \${LATEST_HTTP_STATUS}"
-                            fi
-                        fi
-                        
-                        echo "🔍 ==============================="
                     """
+                    
+                    // 可以添加 Harbor API 调用来验证镜像
+                    // curl -u admin:password ${HARBOR_REGISTRY}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}/artifacts
                 }
             }
         }
