@@ -1,35 +1,5 @@
 pipeline {
-    agent {
-        kubernetes {
-            yaml '''
-kind: Pod
-spec:
-  containers:
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:debug
-    imagePullPolicy: Always
-    command:
-    - sleep
-    args:
-    - 9999999
-    volumeMounts:
-      - name: jenkins-docker-cfg
-        mountPath: /kaniko/.docker
-    env:
-    - name: DOCKER_CONFIG
-      value: /kaniko/.docker
-  volumes:
-  - name: jenkins-docker-cfg
-    projected:
-      sources:
-      - secret:
-          name: harbor-credentials
-          items:
-            - key: .dockerconfigjson
-              path: config.json
-            '''
-        }
-    }
+    agent none
 
     parameters {
         // 允许外部程序通过参数触发构建
@@ -64,16 +34,70 @@ spec:
         
         // 平台配置
         BUILD_PLATFORMS = "${params.BUILD_PLATFORMS}"
+
+        // 定义 Kaniko Pod YAML 模板
+        KANIKO_POD_YAML = """
+kind: Pod
+spec:
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+    volumeMounts:
+      - name: jenkins-docker-cfg
+        mountPath: /kaniko/.docker
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+  volumes:
+  - name: jenkins-docker-cfg
+    projected:
+      sources:
+      - secret:
+          name: harbor-credentials
+          items:
+            - key: .dockerconfigjson
+              path: config.json
+"""
+        // 定义 准备阶段 Pod YAML 模板
+        PREP_POD_YAML = """
+kind: Pod
+spec:
+  containers:
+  - name: python
+    image: python:3.9-slim
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+"""
     }
 
     stages {
         stage("清理工作空间") {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             steps {
                 cleanWs()
             }
         }
 
         stage("处理上传文件") {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             steps {
                 script {
                     echo "📦 开始处理上传的构建文件"
@@ -232,6 +256,12 @@ except Exception as e:
         }
 
         stage("构建准备") {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             steps {
                 script {
                     echo "🔧 构建准备阶段"
@@ -294,11 +324,20 @@ except Exception as e:
                         echo "构建平台: ${env.PLATFORM_LIST}"
                         echo "多平台模式: ${env.IS_MULTI_PLATFORM}"
                     """
+
+                    echo "📦 Stashing build context for parallel stages..."
+                    stash includes: "${params.BUILD_CONTEXT}/**", name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                 }
             }
         }
 
         stage("多平台镜像构建") {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
@@ -316,9 +355,16 @@ except Exception as e:
                             return env.PLATFORM_LIST.contains('linux/amd64')
                         }
                     }
+                    agent {
+                        kubernetes {
+                            yaml KANIKO_POD_YAML
+                        }
+                    }
                     steps {
                         script {
                             echo "🖥️  构建 AMD64 镜像"
+                            echo "📦 Unstashing build context..."
+                            unstash name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                             buildPlatformImage('linux/amd64', 'amd64')
                         }
                     }
@@ -335,9 +381,16 @@ except Exception as e:
                             return env.PLATFORM_LIST.contains('linux/arm64')
                         }
                     }
+                    agent {
+                        kubernetes {
+                            yaml KANIKO_POD_YAML
+                        }
+                    }
                     steps {
                         script {
                             echo "💪 构建 ARM64 镜像"
+                            echo "📦 Unstashing build context..."
+                            unstash name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                             buildPlatformImage('linux/arm64', 'arm64')
                         }
                     }
@@ -350,9 +403,13 @@ except Exception as e:
             }
         }
 
-
-
         stage("构建结果汇总") {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
@@ -384,11 +441,23 @@ except Exception as e:
 
     post {
         always {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             script {
                 echo "🧹 构建完成 - 编号: ${BUILD_NUMBER}"
             }
         }
         success {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             script {
                 def platforms = env.PLATFORM_LIST?.split(',') ?: []
                 def builtPlatforms = []
@@ -405,6 +474,12 @@ except Exception as e:
             }
         }
         failure {
+            agent {
+                kubernetes {
+                    yaml PREP_POD_YAML
+                    defaultContainer 'python'
+                }
+            }
             script {
                 echo "❌ 构建失败 - ${params.APP_NAME}:${IMAGE_TAG}"
             }
