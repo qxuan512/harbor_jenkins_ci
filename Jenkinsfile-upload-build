@@ -1,5 +1,42 @@
 pipeline {
-    agent none
+    agent {
+        kubernetes {
+            yaml '''
+kind: Pod
+spec:
+  containers:
+  - name: python
+    image: python:3.9-slim
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+    volumeMounts:
+      - name: jenkins-docker-cfg
+        mountPath: /kaniko/.docker
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+  volumes:
+  - name: jenkins-docker-cfg
+    projected:
+      sources:
+      - secret:
+          name: harbor-credentials
+          items:
+            - key: .dockerconfigjson
+              path: config.json
+            '''
+        }
+    }
 
     parameters {
         // 允许外部程序通过参数触发构建
@@ -34,179 +71,128 @@ pipeline {
         
         // 平台配置
         BUILD_PLATFORMS = "${params.BUILD_PLATFORMS}"
-
-        // 定义 Kaniko Pod YAML 模板
-        KANIKO_POD_YAML = """
-kind: Pod
-spec:
-  containers:
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:debug
-    imagePullPolicy: Always
-    command:
-    - sleep
-    args:
-    - 9999999
-    volumeMounts:
-      - name: jenkins-docker-cfg
-        mountPath: /kaniko/.docker
-    env:
-    - name: DOCKER_CONFIG
-      value: /kaniko/.docker
-  volumes:
-  - name: jenkins-docker-cfg
-    projected:
-      sources:
-      - secret:
-          name: harbor-credentials
-          items:
-            - key: .dockerconfigjson
-              path: config.json
-"""
-        // 定义 准备阶段 Pod YAML 模板
-        PREP_POD_YAML = """
-kind: Pod
-spec:
-  containers:
-  - name: python
-    image: python:3.9-slim
-    imagePullPolicy: Always
-    command:
-    - sleep
-    args:
-    - 9999999
-"""
     }
 
     stages {
         stage("清理工作空间") {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             steps {
-                cleanWs()
+                container('python') {
+                    cleanWs()
+                }
             }
         }
 
-        stage("处理上传文件") {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
+        stage("构建准备") {
             steps {
-                script {
-                    echo "📦 开始处理上传的构建文件"
-                    
-                    // 获取上传文件的原始文件名
-                    def originalFilename = env.BUILD_ARCHIVE_FILENAME
-                    echo "上传文件名: ${originalFilename}"
-                    
-                    // 从 stash 中恢复上传的文件
-                    unstash 'BUILD_ARCHIVE'
-                    
-                    // 检查文件并确定实际文件名
-                    sh """
-                        echo "📋 检查上传文件信息..."
-                        ls -la BUILD_ARCHIVE* || true
-                        
-                        # 检查是否有原始文件名
-                        if [ -n "\${BUILD_ARCHIVE_FILENAME}" ] && [ "\${BUILD_ARCHIVE_FILENAME}" != "null" ]; then
-                            echo "✅ 使用原始文件名: \${BUILD_ARCHIVE_FILENAME}"
-                            if [ -f "BUILD_ARCHIVE" ]; then
-                                mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
-                            fi
-                            ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME}"
-                        else
-                            echo "⚠️  文件名为空或null，尝试检测文件类型"
-                            # 使用 file 命令检测文件类型
-                            FILE_TYPE=\$(file BUILD_ARCHIVE 2>/dev/null || echo "unknown")
-                            echo "文件类型检测: \$FILE_TYPE"
-                            
-                            if echo "\$FILE_TYPE" | grep -q "Zip archive"; then
-                                ARCHIVE_FILE="BUILD_ARCHIVE.zip"
-                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                echo "✅ 检测为ZIP文件，重命名为: \$ARCHIVE_FILE"
-                            elif echo "\$FILE_TYPE" | grep -q "gzip compressed"; then
-                                ARCHIVE_FILE="BUILD_ARCHIVE.tar.gz"
-                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                echo "✅ 检测为TAR.GZ文件，重命名为: \$ARCHIVE_FILE"
-                            elif echo "\$FILE_TYPE" | grep -q "POSIX tar archive"; then
-                                ARCHIVE_FILE="BUILD_ARCHIVE.tar"
-                                mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                echo "✅ 检测为TAR文件，重命名为: \$ARCHIVE_FILE"
-                            else
-                                ARCHIVE_FILE="BUILD_ARCHIVE"
-                                echo "⚠️  无法识别文件类型，使用默认名称: \$ARCHIVE_FILE"
-                            fi
-                        fi
-                        
-                        echo "最终使用的文件名: \$ARCHIVE_FILE"
-                        echo "ARCHIVE_FILE=\$ARCHIVE_FILE" > archive_info.env
-                    """
-                    
-                    // 读取文件名信息
-                    def archiveInfo = readFile('archive_info.env').trim()
-                    def archiveFile = archiveInfo.split('=')[1]
-                    env.ACTUAL_ARCHIVE_FILE = archiveFile
-                    
-                    echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
-                    
-                    // 检测文件类型并解压 - 使用 Pipeline Utility Steps
+                container('python') {
                     script {
-                        def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
+                        echo "📦 开始处理上传的构建文件"
                         
-                        echo "📋 文件信息:"
-                        sh "ls -lh '${uploadedArchive}'"
+                        // 获取上传文件的原始文件名
+                        def originalFilename = env.BUILD_ARCHIVE_FILENAME
+                        echo "上传文件名: ${originalFilename}"
                         
-                        echo "📂 开始解压文件: ${uploadedArchive}"
+                        // 从 stash 中恢复上传的文件
+                        unstash 'BUILD_ARCHIVE'
                         
-                        // 根据文件扩展名使用适当的 Pipeline Utility Steps
-                        try {
-                            if (uploadedArchive.endsWith('.zip')) {
-                                echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
-                                unzip zipFile: uploadedArchive, quiet: false
-                                echo "✅ ZIP 文件解压完成"
-                            } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
-                                untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                echo "✅ TAR.GZ 文件解压完成"
-                            } else if (uploadedArchive.endsWith('.tar')) {
-                                echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
-                                untar file: uploadedArchive, quiet: false
-                                echo "✅ TAR 文件解压完成"
-                            } else {
-                                echo "⚠️  未知文件格式，尝试通用解压方法"
-                                // 先尝试作为 ZIP 文件
-                                try {
-                                    echo "尝试按 ZIP 格式解压"
+                        // 检查文件并确定实际文件名
+                        sh """
+                            echo "📋 检查上传文件信息..."
+                            ls -la BUILD_ARCHIVE* || true
+                            
+                            # 检查是否有原始文件名
+                            if [ -n "\${BUILD_ARCHIVE_FILENAME}" ] && [ "\${BUILD_ARCHIVE_FILENAME}" != "null" ]; then
+                                echo "✅ 使用原始文件名: \${BUILD_ARCHIVE_FILENAME}"
+                                if [ -f "BUILD_ARCHIVE" ]; then
+                                    mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
+                                fi
+                                ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME}"
+                            else
+                                echo "⚠️  文件名为空或null，尝试检测文件类型"
+                                # 使用 file 命令检测文件类型
+                                FILE_TYPE=\$(file BUILD_ARCHIVE 2>/dev/null || echo "unknown")
+                                echo "文件类型检测: \$FILE_TYPE"
+                                
+                                if echo "\$FILE_TYPE" | grep -q "Zip archive"; then
+                                    ARCHIVE_FILE="BUILD_ARCHIVE.zip"
+                                    mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                    echo "✅ 检测为ZIP文件，重命名为: \$ARCHIVE_FILE"
+                                elif echo "\$FILE_TYPE" | grep -q "gzip compressed"; then
+                                    ARCHIVE_FILE="BUILD_ARCHIVE.tar.gz"
+                                    mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                    echo "✅ 检测为TAR.GZ文件，重命名为: \$ARCHIVE_FILE"
+                                elif echo "\$FILE_TYPE" | grep -q "POSIX tar archive"; then
+                                    ARCHIVE_FILE="BUILD_ARCHIVE.tar"
+                                    mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
+                                    echo "✅ 检测为TAR文件，重命名为: \$ARCHIVE_FILE"
+                                else
+                                    ARCHIVE_FILE="BUILD_ARCHIVE"
+                                    echo "⚠️  无法识别文件类型，使用默认名称: \$ARCHIVE_FILE"
+                                fi
+                            fi
+                            
+                            echo "最终使用的文件名: \$ARCHIVE_FILE"
+                            echo "ARCHIVE_FILE=\$ARCHIVE_FILE" > archive_info.env
+                        """
+                        
+                        // 读取文件名信息
+                        def archiveInfo = readFile('archive_info.env').trim()
+                        def archiveFile = archiveInfo.split('=')[1]
+                        env.ACTUAL_ARCHIVE_FILE = archiveFile
+                        
+                        echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
+                        
+                        // 检测文件类型并解压 - 使用 Pipeline Utility Steps
+                        script {
+                            def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
+                            
+                            echo "📋 文件信息:"
+                            sh "ls -lh '${uploadedArchive}'"
+                            
+                            echo "📂 开始解压文件: ${uploadedArchive}"
+                            
+                            // 根据文件扩展名使用适当的 Pipeline Utility Steps
+                            try {
+                                if (uploadedArchive.endsWith('.zip')) {
+                                    echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
                                     unzip zipFile: uploadedArchive, quiet: false
-                                    echo "✅ 按 ZIP 格式解压成功"
-                                } catch (Exception zipEx) {
-                                    echo "ZIP 解压失败，尝试按 TAR 格式解压"
+                                    echo "✅ ZIP 文件解压完成"
+                                } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
+                                    echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
+                                    untar file: uploadedArchive, compression: 'gzip', quiet: false
+                                    echo "✅ TAR.GZ 文件解压完成"
+                                } else if (uploadedArchive.endsWith('.tar')) {
+                                    echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
+                                    untar file: uploadedArchive, quiet: false
+                                    echo "✅ TAR 文件解压完成"
+                                } else {
+                                    echo "⚠️  未知文件格式，尝试通用解压方法"
+                                    // 先尝试作为 ZIP 文件
                                     try {
-                                        untar file: uploadedArchive, quiet: false
-                                        echo "✅ 按 TAR 格式解压成功"
-                                    } catch (Exception tarEx) {
-                                        echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
-                                        untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                        echo "✅ 按 TAR.GZ 格式解压成功"
+                                        echo "尝试按 ZIP 格式解压"
+                                        unzip zipFile: uploadedArchive, quiet: false
+                                        echo "✅ 按 ZIP 格式解压成功"
+                                    } catch (Exception zipEx) {
+                                        echo "ZIP 解压失败，尝试按 TAR 格式解压"
+                                        try {
+                                            untar file: uploadedArchive, quiet: false
+                                            echo "✅ 按 TAR 格式解压成功"
+                                        } catch (Exception tarEx) {
+                                            echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
+                                            untar file: uploadedArchive, compression: 'gzip', quiet: false
+                                            echo "✅ 按 TAR.GZ 格式解压成功"
+                                        }
                                     }
                                 }
-                            }
-                        } catch (Exception e) {
-                            echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
-                            echo "回退到传统方法解压..."
-                            
-                            // 回退到传统命令行解压
-                            if (uploadedArchive.endsWith('.zip')) {
-                                echo "使用 Python 解压 ZIP 文件"
-                                sh '''
-                                    python3 -c "
+                            } catch (Exception e) {
+                                echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
+                                echo "回退到传统方法解压..."
+                                
+                                // 回退到传统命令行解压
+                                if (uploadedArchive.endsWith('.zip')) {
+                                    echo "使用 Python 解压 ZIP 文件"
+                                    sh '''
+                                        python3 -c "
 import zipfile
 import sys
 try:
@@ -218,126 +204,111 @@ except Exception as e:
     sys.exit(1)
                                     "
                                 '''
-                            } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                echo "使用 tar 解压 TAR.GZ 文件"
-                                sh "tar -xzf '${uploadedArchive}'"
-                            } else if (uploadedArchive.endsWith('.tar')) {
-                                echo "使用 tar 解压 TAR 文件"
-                                sh "tar -xf '${uploadedArchive}'"
+                                } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
+                                    echo "使用 tar 解压 TAR.GZ 文件"
+                                    sh "tar -xzf '${uploadedArchive}'"
+                                } else if (uploadedArchive.endsWith('.tar')) {
+                                    echo "使用 tar 解压 TAR 文件"
+                                    sh "tar -xf '${uploadedArchive}'"
+                                }
                             }
+                            
+                            echo "📁 解压后工作空间内容:"
+                            sh "ls -la"
                         }
                         
-                        echo "📁 解压后工作空间内容:"
-                        sh "ls -la"
-                    }
-                    
-                    // 验证构建目录和文件是否存在
-                    sh """
-                        if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
-                            echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
-                            echo "📁 当前目录内容:"
-                            find . -type d -maxdepth 2
-                            exit 1
-                        fi
-                        
-                        if [ ! -f "${DOCKERFILE_PATH}" ]; then
-                            echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
+                        // 验证构建目录和文件是否存在
+                        sh """
+                            if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
+                                echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
+                                echo "📁 当前目录内容:"
+                                find . -type d -maxdepth 2
+                                exit 1
+                            fi
+                            
+                            if [ ! -f "${DOCKERFILE_PATH}" ]; then
+                                echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
+                                echo "📁 构建目录内容:"
+                                ls -la ${BUILD_CONTEXT_PATH}/
+                                exit 1
+                            fi
+                            
+                            echo "✅ 构建文件验证通过"
                             echo "📁 构建目录内容:"
                             ls -la ${BUILD_CONTEXT_PATH}/
-                            exit 1
-                        fi
+                        """
+
+                        echo "🔧 构建准备阶段"
                         
-                        echo "✅ 构建文件验证通过"
-                        echo "📁 构建目录内容:"
-                        ls -la ${BUILD_CONTEXT_PATH}/
-                    """
-                }
-            }
-        }
+                        // 处理唯一ID - 通常由Python脚本生成并传递
+                        def uniqueId = params.BUILD_UNIQUE_ID
+                        if (!uniqueId || uniqueId.trim().isEmpty()) {
+                            uniqueId = "${new Date().format('yyyyMMddHHmmss')}-${BUILD_NUMBER}-${UUID.randomUUID().toString().substring(0, 8)}"
+                            echo "📋 Jenkins生成唯一ID: ${uniqueId}"
+                        } else {
+                            echo "📋 使用传递的唯一ID: ${uniqueId}"
+                        }
+                        env.ACTUAL_UNIQUE_ID = uniqueId
+                        
+                        // 处理平台配置
+                        def platformsStr = params.BUILD_PLATFORMS
+                        echo "🔍 原始平台参数: '${platformsStr}'"
+                        
+                        def platforms = platformsStr.split(',')
+                        def platformsInfo = []
+                        
+                        echo "🏗️  多平台构建配置:"
+                        echo "   选择的平台: ${platformsStr}"
+                        echo "   分割后平台数量: ${platforms.length}"
+                        
+                        for (platform in platforms) {
+                            def cleanPlatform = platform.trim()
+                            platformsInfo.add(cleanPlatform)
+                            echo "   - 平台: '${cleanPlatform}'"
+                        }
+                        
+                        env.PLATFORM_LIST = platformsInfo.join(',')
+                        env.IS_MULTI_PLATFORM = (platforms.length > 1).toString()
+                        
+                        echo "🔍 环境变量设置:"
+                        echo "   PLATFORM_LIST: '${env.PLATFORM_LIST}'"
+                        echo "   IS_MULTI_PLATFORM: '${env.IS_MULTI_PLATFORM}'"
+                        
+                        echo "📋 构建配置信息:"
+                        echo "   应用名称: ${params.APP_NAME}"
+                        echo "   应用版本: ${params.APP_VERSION}" 
+                        echo "   构建唯一ID: ${uniqueId}"
+                        echo "   镜像名称: ${IMAGE_NAME}"
+                        echo "   镜像标签: ${IMAGE_TAG}"
+                        echo "   Harbor 仓库: ${HARBOR_REGISTRY}"
+                        echo "   项目: ${HARBOR_PROJECT}"
+                        echo "   构建平台: ${env.PLATFORM_LIST}"
+                        echo "   多平台构建: ${env.IS_MULTI_PLATFORM}"
+                        
+                        // 显示构建信息
+                        sh """
+                            echo "=== 构建信息 ==="
+                            echo "构建号: ${BUILD_NUMBER}"
+                            echo "构建唯一ID: ${uniqueId}"
+                            echo "构建时间: \$(date)"
+                            echo "构建节点: \$(hostname)"
+                            echo "Jenkins URL: ${JENKINS_URL}"
+                            echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
+                            echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
+                            echo "构建平台: ${env.PLATFORM_LIST}"
+                            echo "多平台模式: ${env.IS_MULTI_PLATFORM}"
+                        """
 
-        stage("构建准备") {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
-            steps {
-                script {
-                    echo "🔧 构建准备阶段"
-                    
-                    // 处理唯一ID - 通常由Python脚本生成并传递
-                    def uniqueId = params.BUILD_UNIQUE_ID
-                    if (!uniqueId || uniqueId.trim().isEmpty()) {
-                        uniqueId = "${new Date().format('yyyyMMddHHmmss')}-${BUILD_NUMBER}-${UUID.randomUUID().toString().substring(0, 8)}"
-                        echo "📋 Jenkins生成唯一ID: ${uniqueId}"
-                    } else {
-                        echo "📋 使用传递的唯一ID: ${uniqueId}"
+                        echo "📦 Stashing build context for parallel stages..."
+                        echo "📁 验证要stash的目录内容:"
+                        sh "ls -la ${params.BUILD_CONTEXT}/"
+                        stash includes: "${params.BUILD_CONTEXT}/**", name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                     }
-                    env.ACTUAL_UNIQUE_ID = uniqueId
-                    
-                    // 处理平台配置
-                    def platformsStr = params.BUILD_PLATFORMS
-                    echo "🔍 原始平台参数: '${platformsStr}'"
-                    
-                    def platforms = platformsStr.split(',')
-                    def platformsInfo = []
-                    
-                    echo "🏗️  多平台构建配置:"
-                    echo "   选择的平台: ${platformsStr}"
-                    echo "   分割后平台数量: ${platforms.length}"
-                    
-                    for (platform in platforms) {
-                        def cleanPlatform = platform.trim()
-                        platformsInfo.add(cleanPlatform)
-                        echo "   - 平台: '${cleanPlatform}'"
-                    }
-                    
-                    env.PLATFORM_LIST = platformsInfo.join(',')
-                    env.IS_MULTI_PLATFORM = (platforms.length > 1).toString()
-                    
-                    echo "🔍 环境变量设置:"
-                    echo "   PLATFORM_LIST: '${env.PLATFORM_LIST}'"
-                    echo "   IS_MULTI_PLATFORM: '${env.IS_MULTI_PLATFORM}'"
-                    
-                    echo "📋 构建配置信息:"
-                    echo "   应用名称: ${params.APP_NAME}"
-                    echo "   应用版本: ${params.APP_VERSION}" 
-                    echo "   构建唯一ID: ${uniqueId}"
-                    echo "   镜像名称: ${IMAGE_NAME}"
-                    echo "   镜像标签: ${IMAGE_TAG}"
-                    echo "   Harbor 仓库: ${HARBOR_REGISTRY}"
-                    echo "   项目: ${HARBOR_PROJECT}"
-                    echo "   构建平台: ${env.PLATFORM_LIST}"
-                    echo "   多平台构建: ${env.IS_MULTI_PLATFORM}"
-                    
-                    // 显示构建信息
-                    sh """
-                        echo "=== 构建信息 ==="
-                        echo "构建号: ${BUILD_NUMBER}"
-                        echo "构建唯一ID: ${uniqueId}"
-                        echo "构建时间: \$(date)"
-                        echo "构建节点: \$(hostname)"
-                        echo "Jenkins URL: ${JENKINS_URL}"
-                        echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
-                        echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
-                        echo "构建平台: ${env.PLATFORM_LIST}"
-                        echo "多平台模式: ${env.IS_MULTI_PLATFORM}"
-                    """
-
-                    echo "📦 Stashing build context for parallel stages..."
-                    stash includes: "${params.BUILD_CONTEXT}/**", name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                 }
             }
         }
 
         stage("多平台镜像构建") {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
@@ -353,11 +324,6 @@ except Exception as e:
                     when {
                         expression { 
                             return env.PLATFORM_LIST.contains('linux/amd64')
-                        }
-                    }
-                    agent {
-                        kubernetes {
-                            yaml KANIKO_POD_YAML
                         }
                     }
                     steps {
@@ -381,11 +347,6 @@ except Exception as e:
                             return env.PLATFORM_LIST.contains('linux/arm64')
                         }
                     }
-                    agent {
-                        kubernetes {
-                            yaml KANIKO_POD_YAML
-                        }
-                    }
                     steps {
                         script {
                             echo "💪 构建 ARM64 镜像"
@@ -404,12 +365,6 @@ except Exception as e:
         }
 
         stage("构建结果汇总") {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
@@ -441,23 +396,11 @@ except Exception as e:
 
     post {
         always {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             script {
                 echo "🧹 构建完成 - 编号: ${BUILD_NUMBER}"
             }
         }
         success {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             script {
                 def platforms = env.PLATFORM_LIST?.split(',') ?: []
                 def builtPlatforms = []
@@ -474,12 +417,6 @@ except Exception as e:
             }
         }
         failure {
-            agent {
-                kubernetes {
-                    yaml PREP_POD_YAML
-                    defaultContainer 'python'
-                }
-            }
             script {
                 echo "❌ 构建失败 - ${params.APP_NAME}:${IMAGE_TAG}"
             }
