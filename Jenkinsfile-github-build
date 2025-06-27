@@ -472,8 +472,8 @@ def buildPlatformImage(String platform, String platformArch) {
                 --custom-platform=${platform} \\
                 --build-arg=TARGETARCH=${platformArch} \\
                 --build-arg=BUILDPLATFORM=${platform} \\
-                --build-arg=GIT_COMMIT=\${env.GIT_COMMIT_SHORT ?: 'unknown'} \\
-                --build-arg=GIT_BRANCH=\${env.GIT_BRANCH_NAME ?: 'unknown'} \\
+                --build-arg=GIT_COMMIT=${env.GIT_COMMIT_SHORT ?: 'unknown'} \\
+                --build-arg=GIT_BRANCH=${env.GIT_BRANCH_NAME ?: 'unknown'} \\
                 --build-arg=BUILD_NUMBER=${BUILD_NUMBER} \\
                 --cleanup"
             
