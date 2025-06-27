@@ -137,16 +137,26 @@ spec:
                         ])
                     }
                     
-                    // Get Git information
-                    env.GIT_COMMIT_SHORT = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
+                    // Get Git information with error handling
+                    try {
+                        env.GIT_COMMIT_SHORT = sh(
+                            script: 'git rev-parse --short HEAD',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        echo "⚠️  Warning: Could not get Git commit hash: ${e.getMessage()}"
+                        env.GIT_COMMIT_SHORT = 'unknown'
+                    }
                     
-                    env.GIT_BRANCH_NAME = sh(
-                        script: 'git rev-parse --abbrev-ref HEAD',
-                        returnStdout: true
-                    ).trim()
+                    try {
+                        env.GIT_BRANCH_NAME = sh(
+                            script: 'git rev-parse --abbrev-ref HEAD',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        echo "⚠️  Warning: Could not get Git branch name: ${e.getMessage()}"
+                        env.GIT_BRANCH_NAME = params.GIT_BRANCH ?: 'unknown'
+                    }
                     
                     echo "✅ Code checkout completed"
                     echo "📋 Git Commit: ${env.GIT_COMMIT_SHORT}"
@@ -462,8 +472,8 @@ def buildPlatformImage(String platform, String platformArch) {
                 --custom-platform=${platform} \\
                 --build-arg=TARGETARCH=${platformArch} \\
                 --build-arg=BUILDPLATFORM=${platform} \\
-                --build-arg=GIT_COMMIT=${GIT_COMMIT_SHORT} \\
-                --build-arg=GIT_BRANCH=${GIT_BRANCH_NAME} \\
+                --build-arg=GIT_COMMIT=\${env.GIT_COMMIT_SHORT ?: 'unknown'} \\
+                --build-arg=GIT_BRANCH=\${env.GIT_BRANCH_NAME ?: 'unknown'} \\
                 --build-arg=BUILD_NUMBER=${BUILD_NUMBER} \\
                 --cleanup"
             
