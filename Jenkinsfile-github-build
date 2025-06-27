@@ -1,0 +1,500 @@
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+kind: Pod
+spec:
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+    volumeMounts:
+      - name: jenkins-docker-cfg
+        mountPath: /kaniko/.docker
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+  volumes:
+  - name: jenkins-docker-cfg
+    projected:
+      sources:
+      - secret:
+          name: harbor-credentials
+          items:
+            - key: .dockerconfigjson
+              path: config.json
+            '''
+        }
+    }
+
+    parameters {
+        // GitHub Repository Configuration
+        string(name: 'GIT_REPOSITORY_URL', 
+               defaultValue: 'https://github.com/username/repository.git', 
+               description: 'GitHub Repository URL (HTTPS or SSH)')
+        string(name: 'GIT_BRANCH', 
+               defaultValue: 'main', 
+               description: 'Git Branch Name')
+        string(name: 'GIT_CREDENTIALS_ID', 
+               defaultValue: '', 
+               description: 'Git Credentials ID (Optional, for private repos)')
+        
+        // Build Configuration
+        string(name: 'APP_NAME', 
+               defaultValue: 'my-app', 
+               description: 'Application Name')
+        string(name: 'APP_VERSION', 
+               defaultValue: '1.0.0', 
+               description: 'Application Version')
+        string(name: 'BUILD_CONTEXT', 
+               defaultValue: '.', 
+               description: 'Build Context Directory (relative to repo root)')
+        string(name: 'DOCKERFILE_PATH', 
+               defaultValue: 'Dockerfile', 
+               description: 'Dockerfile Path (relative to build context)')
+        
+        // Image Configuration
+        choice(name: 'IMAGE_TAG_STRATEGY', 
+               choices: ['version-build', 'timestamp', 'latest', 'git-commit'], 
+               description: 'Image Tag Strategy')
+        choice(name: 'BUILD_PLATFORMS', 
+               choices: ['linux/amd64', 'linux/arm64', 'linux/amd64,linux/arm64'], 
+               description: 'Build Platforms (supports multi-platform builds)')
+        
+        // Advanced Options
+        string(name: 'BUILD_UNIQUE_ID', 
+               defaultValue: '', 
+               description: 'Build Unique ID (auto-generated if empty)')
+        booleanParam(name: 'ENABLE_CACHE', 
+                     defaultValue: true, 
+                     description: 'Enable Kaniko Build Cache')
+        string(name: 'BUILD_ARGS', 
+               defaultValue: '', 
+               description: 'Docker Build Args (format: KEY1=VALUE1,KEY2=VALUE2)')
+    }
+
+    environment {
+        // Harbor Registry Configuration
+        HARBOR_REGISTRY = "registry.test.shifu.dev"
+        HARBOR_PROJECT = "test-project"
+        DOCKER_USER = "admin"
+        DOCKER_PASS = 'harbor-credentials'
+        
+        // Image Configuration
+        IMAGE_NAME = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${params.APP_NAME}"
+        IMAGE_TAG = generateImageTag()
+        
+        // Git Information
+        GIT_COMMIT_SHORT = ""
+        GIT_BRANCH_NAME = ""
+        
+        // Build Configuration
+        BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
+        DOCKERFILE_FULL_PATH = "${params.BUILD_CONTEXT}/${params.DOCKERFILE_PATH}"
+        
+        // Platform Configuration
+        BUILD_PLATFORMS = "${params.BUILD_PLATFORMS}"
+    }
+
+    stages {
+        stage("Cleanup Workspace") {
+            steps {
+                script {
+                    echo "🧹 Cleaning Jenkins workspace"
+                    cleanWs()
+                }
+            }
+        }
+
+        stage("Checkout from GitHub") {
+            steps {
+                script {
+                    echo "📥 Checking out code from GitHub"
+                    echo "🔗 Repository: ${params.GIT_REPOSITORY_URL}"
+                    echo "🌿 Branch: ${params.GIT_BRANCH}"
+                    
+                    // Choose checkout method based on credentials
+                    if (params.GIT_CREDENTIALS_ID && !params.GIT_CREDENTIALS_ID.trim().isEmpty()) {
+                        echo "🔐 Using credentials: ${params.GIT_CREDENTIALS_ID}"
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.GIT_BRANCH}"]],
+                            userRemoteConfigs: [[
+                                url: params.GIT_REPOSITORY_URL,
+                                credentialsId: params.GIT_CREDENTIALS_ID
+                            ]]
+                        ])
+                    } else {
+                        echo "🌐 Using public repository access"
+                        checkout([
+                            $class: 'GitSCM',
+                            branches: [[name: "*/${params.GIT_BRANCH}"]],
+                            userRemoteConfigs: [[url: params.GIT_REPOSITORY_URL]]
+                        ])
+                    }
+                    
+                    // Get Git information
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.GIT_BRANCH_NAME = sh(
+                        script: 'git rev-parse --abbrev-ref HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "✅ Code checkout completed"
+                    echo "📋 Git Commit: ${env.GIT_COMMIT_SHORT}"
+                    echo "🌿 Current Branch: ${env.GIT_BRANCH_NAME}"
+                    
+                    // Show repository information
+                    sh """
+                        echo "=== Git Repository Information ==="
+                        git log -1 --oneline
+                        echo ""
+                        echo "=== Repository File Structure ==="
+                        find . -type f -name "Dockerfile*" | head -10
+                        echo ""
+                        echo "=== Build Context Directory ==="
+                        ls -la ${BUILD_CONTEXT_PATH}/ || echo "Build context directory not found: ${BUILD_CONTEXT_PATH}"
+                    """
+                }
+            }
+        }
+
+        stage("Validate Build Files") {
+            steps {
+                script {
+                    echo "🔍 Validating build files"
+                    
+                    // Validate build context directory
+                    sh """
+                        if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
+                            echo "❌ Error: Build context directory not found: ${BUILD_CONTEXT_PATH}"
+                            echo "📁 Repository root contents:"
+                            ls -la
+                            exit 1
+                        fi
+                        echo "✅ Build context directory exists: ${BUILD_CONTEXT_PATH}"
+                    """
+                    
+                    // Validate Dockerfile
+                    sh """
+                        if [ ! -f "${DOCKERFILE_FULL_PATH}" ]; then
+                            echo "❌ Error: Dockerfile not found: ${DOCKERFILE_FULL_PATH}"
+                            echo "📁 Build context directory contents:"
+                            ls -la ${BUILD_CONTEXT_PATH}/
+                            echo ""
+                            echo "🔍 Looking for all Dockerfiles:"
+                            find . -name "Dockerfile*" -type f
+                            exit 1
+                        fi
+                        echo "✅ Dockerfile exists: ${DOCKERFILE_FULL_PATH}"
+                    """
+                    
+                    // Show Dockerfile content preview
+                    sh """
+                        echo "📄 Dockerfile content preview:"
+                        head -20 ${DOCKERFILE_FULL_PATH}
+                        echo ""
+                        echo "📋 Build context file list:"
+                        ls -la ${BUILD_CONTEXT_PATH}/
+                    """
+                }
+            }
+        }
+
+        stage("Build Preparation") {
+            steps {
+                script {
+                    echo "🔧 Build preparation stage"
+                    
+                    // Handle unique ID
+                    def uniqueId = params.BUILD_UNIQUE_ID
+                    if (!uniqueId || uniqueId.trim().isEmpty()) {
+                        uniqueId = "${new Date().format('yyyyMMdd-HHmmss')}-${BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                        echo "📋 Auto-generated unique ID: ${uniqueId}"
+                    } else {
+                        echo "📋 Using specified unique ID: ${uniqueId}"
+                    }
+                    env.ACTUAL_UNIQUE_ID = uniqueId
+                    
+                    // Regenerate image tag (may need Git information)
+                    env.IMAGE_TAG = generateImageTag()
+                    
+                    // Handle platform configuration
+                    def platformsStr = params.BUILD_PLATFORMS
+                    def platforms = platformsStr.split(',')
+                    def platformsInfo = []
+                    
+                    for (platform in platforms) {
+                        def cleanPlatform = platform.trim()
+                        platformsInfo.add(cleanPlatform)
+                    }
+                    
+                    env.PLATFORM_LIST = platformsInfo.join(',')
+                    env.IS_MULTI_PLATFORM = (platforms.length > 1).toString()
+                    
+                    echo "📋 Build configuration:"
+                    echo "   Git Repository: ${params.GIT_REPOSITORY_URL}"
+                    echo "   Git Branch: ${params.GIT_BRANCH}"
+                    echo "   Git Commit: ${env.GIT_COMMIT_SHORT}"
+                    echo "   App Name: ${params.APP_NAME}"
+                    echo "   App Version: ${params.APP_VERSION}"
+                    echo "   Build Unique ID: ${uniqueId}"
+                    echo "   Image Name: ${env.IMAGE_NAME}"
+                    echo "   Image Tag: ${env.IMAGE_TAG}"
+                    echo "   Harbor Registry: ${HARBOR_REGISTRY}"
+                    echo "   Project: ${HARBOR_PROJECT}"
+                    echo "   Build Context: ${BUILD_CONTEXT_PATH}"
+                    echo "   Dockerfile: ${DOCKERFILE_FULL_PATH}"
+                    echo "   Build Platforms: ${env.PLATFORM_LIST}"
+                    echo "   Multi-platform Build: ${env.IS_MULTI_PLATFORM}"
+                    echo "   Cache Enabled: ${params.ENABLE_CACHE}"
+                    
+                    // Handle build arguments
+                    if (params.BUILD_ARGS && !params.BUILD_ARGS.trim().isEmpty()) {
+                        echo "   Build Args: ${params.BUILD_ARGS}"
+                        env.BUILD_ARGS_LIST = params.BUILD_ARGS
+                    } else {
+                        env.BUILD_ARGS_LIST = ""
+                    }
+                }
+            }
+        }
+
+        stage("Multi-Platform Build Declaration") {
+            steps {
+                script {
+                    def platforms = env.PLATFORM_LIST.split(',')
+                    echo "🚀 Preparing to build ${platforms.length} platforms: ${env.PLATFORM_LIST}"
+                    echo "🏗️  Build strategy: Parallel build for each platform"
+                }
+            }
+        }
+        
+        stage("Parallel Build Execution") {
+            failFast true
+            parallel {
+                stage('Build AMD64') {
+                    when {
+                        expression { 
+                            return env.PLATFORM_LIST.contains('linux/amd64')
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "🖥️  Starting AMD64 build"
+                            buildPlatformImage('linux/amd64', 'amd64')
+                        }
+                    }
+                    post {
+                        success {
+                            echo "✅ AMD64 build successful"
+                        }
+                        failure {
+                            echo "❌ AMD64 build failed"
+                        }
+                    }
+                }
+                
+                stage('Build ARM64') {
+                    when {
+                        expression { 
+                            return env.PLATFORM_LIST.contains('linux/arm64')
+                        }
+                    }
+                    steps {
+                        script {
+                            echo "💪 Starting ARM64 build"
+                            buildPlatformImage('linux/arm64', 'arm64')
+                        }
+                    }
+                    post {
+                        success {
+                            echo "✅ ARM64 build successful"
+                        }
+                        failure {
+                            echo "❌ ARM64 build failed"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage("Build Results Summary") {
+            steps {
+                script {
+                    def platforms = env.PLATFORM_LIST.split(',')
+                    def builtPlatforms = []
+                    
+                    for (platform in platforms) {
+                        def cleanPlatform = platform.trim()
+                        if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                            builtPlatforms.add(cleanPlatform)
+                        }
+                    }
+                    
+                    echo "📊 Build completion summary:"
+                    echo "   Application: ${params.APP_NAME}"
+                    echo "   Image Tag: ${env.IMAGE_TAG}"
+                    echo "   Platforms: ${builtPlatforms.size()} platforms"
+                    echo "   Git Commit: ${env.GIT_COMMIT_SHORT}"
+                    echo ""
+                    echo "🎯 Built images:"
+                    
+                    for (platform in builtPlatforms) {
+                        def platformArch = platform.replace('linux/', '')
+                        echo "   ${env.IMAGE_NAME}:${env.IMAGE_TAG}-${platformArch}"
+                        echo "   ${env.IMAGE_NAME}:latest-${platformArch}"
+                    }
+                    
+                    echo ""
+                    echo "🌐 Harbor Registry URL:"
+                    echo "   ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                    echo ""
+                    echo "📋 Build information:"
+                    echo "   Build Number: ${BUILD_NUMBER}"
+                    echo "   Build Time: ${new Date()}"
+                    echo "   Git Repository: ${params.GIT_REPOSITORY_URL}"
+                    echo "   Git Branch: ${params.GIT_BRANCH}"
+                    echo "   Git Commit: ${env.GIT_COMMIT_SHORT}"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                echo "🧹 Build process completed - Number: ${BUILD_NUMBER}"
+                echo "📋 Git Info: ${env.GIT_COMMIT_SHORT} @ ${env.GIT_BRANCH_NAME}"
+            }
+        }
+        success {
+            script {
+                def platforms = env.PLATFORM_LIST?.split(',') ?: []
+                def builtPlatforms = []
+                
+                for (platform in platforms) {
+                    def cleanPlatform = platform.trim()
+                    if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                        builtPlatforms.add(cleanPlatform.replace('linux/', ''))
+                    }
+                }
+                
+                echo "🎉 Build completed successfully!"
+                echo "   Application: ${params.APP_NAME}:${env.IMAGE_TAG}"
+                echo "   Platforms: ${builtPlatforms.join(', ')}"
+                echo "   Git: ${env.GIT_COMMIT_SHORT}"
+                echo "   Repository: ${params.GIT_REPOSITORY_URL}"
+            }
+        }
+        failure {
+            script {
+                echo "❌ Build failed!"
+                echo "   Application: ${params.APP_NAME}:${env.IMAGE_TAG}"
+                echo "   Git: ${env.GIT_COMMIT_SHORT}"
+                echo "   Please check build logs for detailed error information"
+            }
+        }
+        cleanup {
+            script {
+                echo "🔄 Executing cleanup operations"
+                // Additional cleanup logic can be added here
+            }
+        }
+    }
+}
+
+// Function to generate image tag
+def generateImageTag() {
+    def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build'
+    
+    switch(strategy) {
+        case 'version-build':
+            return "${params.APP_VERSION}"
+        case 'timestamp':
+            return "${params.APP_VERSION}-${new Date().format('yyyyMMdd-HHmmss')}"
+        case 'git-commit':
+            def gitCommit = env.GIT_COMMIT_SHORT ?: sh(
+                script: 'git rev-parse --short HEAD 2>/dev/null || echo "unknown"',
+                returnStdout: true
+            ).trim()
+            return "${params.APP_VERSION}-${gitCommit}"
+        case 'latest':
+            return 'latest'
+        default:
+            return "${params.APP_VERSION}"
+    }
+}
+
+// Function to build platform-specific image
+def buildPlatformImage(String platform, String platformArch) {
+    container(name: 'kaniko', shell: '/busybox/sh') {
+        sh """#!/busybox/sh
+            echo "🏗️  Starting ${platform} platform build"
+            echo "📂 Build Context: ${BUILD_CONTEXT_PATH}"
+            echo "📄 Dockerfile: ${DOCKERFILE_FULL_PATH}"
+            echo "🏷️  Target Image: ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+            
+            # Validate build files
+            if [ ! -f "${DOCKERFILE_FULL_PATH}" ]; then
+                echo "❌ Dockerfile not found: ${DOCKERFILE_FULL_PATH}"
+                exit 1
+            fi
+            
+            if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
+                echo "❌ Build context directory not found: ${BUILD_CONTEXT_PATH}"
+                exit 1
+            fi
+            
+            # Prepare Kaniko build arguments
+            KANIKO_ARGS="--dockerfile=${DOCKERFILE_FULL_PATH} \\
+                --context=${BUILD_CONTEXT_PATH} \\
+                --destination=${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} \\
+                --destination=${IMAGE_NAME}:latest-${platformArch} \\
+                --custom-platform=${platform} \\
+                --build-arg=TARGETARCH=${platformArch} \\
+                --build-arg=BUILDPLATFORM=${platform} \\
+                --build-arg=GIT_COMMIT=${GIT_COMMIT_SHORT} \\
+                --build-arg=GIT_BRANCH=${GIT_BRANCH_NAME} \\
+                --build-arg=BUILD_NUMBER=${BUILD_NUMBER} \\
+                --cleanup"
+            
+            # Add cache configuration
+            if [ "${ENABLE_CACHE}" = "true" ]; then
+                KANIKO_ARGS="\$KANIKO_ARGS --cache=true --cache-ttl=24h"
+                echo "✅ Build cache enabled"
+            else
+                echo "⚠️  Build cache disabled"
+            fi
+            
+            # Add custom build arguments
+            if [ -n "${BUILD_ARGS_LIST}" ]; then
+                echo "📋 Adding custom build args: ${BUILD_ARGS_LIST}"
+                # Convert KEY1=VALUE1,KEY2=VALUE2 to --build-arg format
+                BUILD_ARGS_FORMATTED=\$(echo "${BUILD_ARGS_LIST}" | sed 's/,/ --build-arg=/g' | sed 's/^/--build-arg=/')
+                KANIKO_ARGS="\$KANIKO_ARGS \$BUILD_ARGS_FORMATTED"
+            fi
+            
+            echo "🚀 Executing Kaniko build..."
+            echo "📋 Build command arguments:"
+            echo "\$KANIKO_ARGS" | tr ' ' '\\n'
+            echo ""
+            
+            # Execute build
+            /kaniko/executor \$KANIKO_ARGS
+            
+            echo "✅ ${platform} platform image build completed"
+            echo "🎯 Built images:"
+            echo "   ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}"
+            echo "   ${IMAGE_NAME}:latest-${platformArch}"
+        """
+    }
+} 
