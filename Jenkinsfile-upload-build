@@ -445,7 +445,7 @@ spec:
                     
                     echo "📊 Build completed: ${params.APP_NAME}:${IMAGE_TAG} (${builtPlatforms.size()} platforms)"
                     echo ""
-                    echo "🎯 Built images:"
+                    echo "🎯 平台特定镜像:"
                     
                     for (platform in builtPlatforms) {
                         def platformArch = platform.replace('linux/', '')
@@ -454,7 +454,149 @@ spec:
                     }
                     
                     echo ""
+                    echo "🌟 多架构统一镜像（推荐使用）:"
+                    echo "   ${IMAGE_NAME}:${IMAGE_TAG} (支持 ${env.PLATFORM_LIST})"
+                    echo "   ${IMAGE_NAME}:latest (支持 ${env.PLATFORM_LIST})"
+                    echo ""
                     echo "🌐 Harbor: ${HARBOR_REGISTRY}/harbor/projects/${HARBOR_PROJECT}/repositories/${params.APP_NAME}"
+                }
+            }
+        }
+        stage("Create Multi-Architecture Manifest") {
+            agent {
+                kubernetes {
+                    yaml '''
+kind: Pod
+spec:
+  containers:
+  - name: docker
+    image: docker:25-cli
+    command:
+    - sleep
+    args:
+    - 9999999
+    volumeMounts:
+      - name: jenkins-docker-cfg
+        mountPath: /root/.docker
+    env:
+    - name: DOCKER_CONFIG
+      value: /root/.docker
+  volumes:
+  - name: jenkins-docker-cfg
+    projected:
+      sources:
+      - secret:
+          name: harbor-credentials
+          items:
+            - key: .dockerconfigjson
+              path: config.json
+            '''
+                }
+            }
+            steps {
+                container('docker') {
+                    script {
+                        def platforms = env.PLATFORM_LIST.split(',')
+                        def manifestImages = []
+                        def manifestLatestImages = []
+                        
+                        // 收集所有平台的镜像
+                        for (platform in platforms) {
+                            def cleanPlatform = platform.trim()
+                            if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                                def platformArch = cleanPlatform.replace('linux/', '')
+                                manifestImages.add("${IMAGE_NAME}:${IMAGE_TAG}-${platformArch}")
+                                manifestLatestImages.add("${IMAGE_NAME}:latest-${platformArch}")
+                            }
+                        }
+                        
+                        echo "🔧 创建多架构 manifest"
+                        echo "目标镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "包含镜像: ${manifestImages.join(', ')}"
+                        
+                        // 启用Docker实验性功能并创建manifest
+                        sh """
+                            # 启用实验性功能
+                            export DOCKER_CLI_EXPERIMENTAL=enabled
+                            
+                            echo "📋 验证源镜像存在性"
+                            ${manifestImages.collect { "docker manifest inspect ${it} > /dev/null && echo '✅ ${it} 存在' || echo '❌ ${it} 不存在'" }.join('\n                            ')}
+                            
+                            echo "🔨 创建版本标签的 manifest"
+                            docker manifest create ${IMAGE_NAME}:${IMAGE_TAG} \\
+                                ${manifestImages.join(' \\\\
+                                ')}
+                        """
+                        
+                        // 为每个平台添加架构注释
+                        for (platform in platforms) {
+                            def cleanPlatform = platform.trim()
+                            if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                                def platformArch = cleanPlatform.replace('linux/', '')
+                                def osArch = cleanPlatform.split('/')
+                                sh """
+                                    echo "📝 为 ${platformArch} 平台添加注释"
+                                    docker manifest annotate ${IMAGE_NAME}:${IMAGE_TAG} \\
+                                        ${IMAGE_NAME}:${IMAGE_TAG}-${platformArch} \\
+                                        --os ${osArch[0]} --arch ${osArch[1]}
+                                """
+                            }
+                        }
+                        
+                        // 推送版本标签的manifest
+                        sh """
+                            echo "📤 推送版本标签的多架构 manifest"
+                            docker manifest push ${IMAGE_NAME}:${IMAGE_TAG}
+                            echo "✅ ${IMAGE_NAME}:${IMAGE_TAG} manifest 推送完成"
+                        """
+                        
+                        // 创建latest标签的manifest
+                        sh """
+                            echo "🔨 创建 latest 标签的 manifest"
+                            docker manifest create ${IMAGE_NAME}:latest \\
+                                ${manifestLatestImages.join(' \\\\
+                                ')}
+                        """
+                        
+                        // 为latest标签添加架构注释
+                        for (platform in platforms) {
+                            def cleanPlatform = platform.trim()
+                            if (cleanPlatform == 'linux/amd64' || cleanPlatform == 'linux/arm64') {
+                                def platformArch = cleanPlatform.replace('linux/', '')
+                                def osArch = cleanPlatform.split('/')
+                                sh """
+                                    echo "📝 为 latest-${platformArch} 添加注释"
+                                    docker manifest annotate ${IMAGE_NAME}:latest \\
+                                        ${IMAGE_NAME}:latest-${platformArch} \\
+                                        --os ${osArch[0]} --arch ${osArch[1]}
+                                """
+                            }
+                        }
+                        
+                        // 推送latest标签的manifest
+                        sh """
+                            echo "📤 推送 latest 标签的多架构 manifest"
+                            docker manifest push ${IMAGE_NAME}:latest
+                            echo "✅ ${IMAGE_NAME}:latest manifest 推送完成"
+                        """
+                        
+                        echo "🎉 多架构 manifest 创建完成！"
+                        echo "🎯 统一镜像名称: ${IMAGE_NAME}:${IMAGE_TAG}"
+                        echo "🎯 统一镜像名称: ${IMAGE_NAME}:latest"
+                        echo "📋 支持平台: ${env.PLATFORM_LIST}"
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        echo "✅ 多架构 manifest 创建成功"
+                    }
+                }
+                failure {
+                    script {
+                        echo "❌ 多架构 manifest 创建失败"
+                    }
                 }
             }
         }
@@ -478,8 +620,10 @@ spec:
                     }
                 }
                 
-                echo "🎉 Build successful - ${params.APP_NAME}:${IMAGE_TAG}"
-                echo "✅ Platforms: ${builtPlatforms.join(', ')}"
+                echo "🎉 多架构构建成功 - ${params.APP_NAME}:${IMAGE_TAG}"
+                echo "✅ 支持平台: ${builtPlatforms.join(', ')}"
+                echo "🌟 统一镜像: ${IMAGE_NAME}:${IMAGE_TAG}"
+                echo "📋 用户可直接使用: docker pull ${IMAGE_NAME}:${IMAGE_TAG}"
             }
         }
         failure {
