@@ -552,10 +552,13 @@ spec:
                         
                         // 创建latest标签的manifest
                         sh """
-                            echo "🔨 创建 latest 标签的 manifest"
-                            docker manifest create ${IMAGE_NAME}:latest \\
-                                ${manifestLatestImages.join(' \\\\
-                                ')}
+                            // 创建latest标签的manifest
+                            sh """
+                                echo "🔨 创建 latest 标签的 manifest"
+                                docker manifest create ${IMAGE_NAME}:latest \\
+                                    ${manifestLatestImages.join(' \\\\
+                                    ')}
+                            """
                         """
                         
                         // 为latest标签添加架构注释
