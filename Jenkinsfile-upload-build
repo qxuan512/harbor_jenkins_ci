@@ -39,42 +39,42 @@ spec:
     }
 
     parameters {
-        // 允许外部程序通过参数触发构建
-        string(name: 'APP_NAME', defaultValue: 'iot-driver', description: '应用名称')
-        string(name: 'APP_VERSION', defaultValue: '1.0.0', description: '应用版本')
-        string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: '构建上下文目录')
-        choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: '镜像标签策略')
-        // 构建平台参数 - 支持多平台构建
+        // Allow external programs to trigger builds via parameters
+        string(name: 'APP_NAME', defaultValue: 'iot-driver', description: 'Application name')
+        string(name: 'APP_VERSION', defaultValue: '1.0.0', description: 'Application version')
+        string(name: 'BUILD_CONTEXT', defaultValue: 'example_direct_upload', description: 'Build context directory')
+        choice(name: 'IMAGE_TAG_STRATEGY', choices: ['version-build', 'timestamp', 'latest'], description: 'Image tag strategy')
+        // Build platform parameters - support multi-platform builds
         choice(name: 'BUILD_PLATFORMS', 
                choices: ['linux/amd64', 'linux/arm64', 'linux/amd64,linux/arm64'], 
-               description: '构建平台选择 (支持多平台并行构建)')
-        // 唯一ID参数，确保每个构建job的唯一性
-        string(name: 'BUILD_UNIQUE_ID', defaultValue: '', description: '构建唯一标识符 (可选，用于确保构建的唯一性，留空则自动生成)')
-        // 添加文件上传参数
-        stashedFile(name: 'BUILD_ARCHIVE', description: '上传包含构建上下文的压缩文件 (支持 .zip, .tar, .tar.gz)')
+               description: 'Build platform selection (supports multi-platform parallel builds)')
+        // Unique ID parameter to ensure uniqueness of each build job
+        string(name: 'BUILD_UNIQUE_ID', defaultValue: '', description: 'Build unique identifier (optional, used to ensure build uniqueness, auto-generated if left empty)')
+        // Add file upload parameter
+        stashedFile(name: 'BUILD_ARCHIVE', description: 'Upload compressed file containing build context (supports .zip, .tar, .tar.gz)')
     }
 
     environment {
-        // Harbor 仓库配置
+        // Harbor repository configuration
         HARBOR_REGISTRY = "registry.test.shifu.dev"
         HARBOR_PROJECT = "test-project"
         DOCKER_USER = "admin"
-        DOCKER_PASS = 'harbor-credentials'  // Jenkins 凭据 ID
+        DOCKER_PASS = 'harbor-credentials'  // Jenkins credentials ID
         
-        // 镜像配置
+        // Image configuration
         IMAGE_NAME = "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${params.APP_NAME}"
         IMAGE_TAG = generateImageTag()
         
-        // 构建配置
+        // Build configuration
         DOCKERFILE_PATH = "${params.BUILD_CONTEXT}/Dockerfile"
         BUILD_CONTEXT_PATH = "${params.BUILD_CONTEXT}"
         
-        // 平台配置
+        // Platform configuration
         BUILD_PLATFORMS = "${params.BUILD_PLATFORMS}"
     }
 
     stages {
-        stage("清理工作空间") {
+        stage("Clean Workspace") {
             steps {
                 container('python') {
                     cleanWs()
@@ -82,115 +82,115 @@ spec:
             }
         }
 
-        stage("构建准备") {
+        stage("Build Preparation") {
             steps {
                 container('python') {
                     script {
-                        echo "📦 开始处理上传的构建文件"
+                        echo "📦 Starting to process uploaded build files"
                         
-                        // 获取上传文件的原始文件名
+                        // Get the original filename of uploaded file
                         def originalFilename = env.BUILD_ARCHIVE_FILENAME
-                        echo "上传文件名: ${originalFilename}"
+                        echo "Uploaded filename: ${originalFilename}"
                         
-                        // 从 stash 中恢复上传的文件
+                        // Restore uploaded file from stash
                         unstash 'BUILD_ARCHIVE'
                         
-                        // 检查文件并确定实际文件名
+                        // Check file and determine actual filename
                         sh """
-                            echo "📋 检查上传文件信息..."
+                            echo "📋 Checking uploaded file information..."
                             ls -la BUILD_ARCHIVE* || true
                             
-                            # 检查是否有原始文件名
+                            # Check if original filename exists
                             if [ -n "\${BUILD_ARCHIVE_FILENAME}" ] && [ "\${BUILD_ARCHIVE_FILENAME}" != "null" ]; then
-                                echo "✅ 使用原始文件名: \${BUILD_ARCHIVE_FILENAME}"
+                                echo "✅ Using original filename: \${BUILD_ARCHIVE_FILENAME}"
                                 if [ -f "BUILD_ARCHIVE" ]; then
                                     mv BUILD_ARCHIVE "\${BUILD_ARCHIVE_FILENAME}"
                                 fi
                                 ARCHIVE_FILE="\${BUILD_ARCHIVE_FILENAME}"
                             else
-                                echo "⚠️  文件名为空或null，尝试检测文件类型"
-                                # 使用 file 命令检测文件类型
+                                echo "⚠️  Filename is empty or null, trying to detect file type"
+                                # Use file command to detect file type
                                 FILE_TYPE=\$(file BUILD_ARCHIVE 2>/dev/null || echo "unknown")
-                                echo "文件类型检测: \$FILE_TYPE"
+                                echo "File type detection: \$FILE_TYPE"
                                 
                                 if echo "\$FILE_TYPE" | grep -q "Zip archive"; then
                                     ARCHIVE_FILE="BUILD_ARCHIVE.zip"
                                     mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                    echo "✅ 检测为ZIP文件，重命名为: \$ARCHIVE_FILE"
+                                    echo "✅ Detected as ZIP file, renamed to: \$ARCHIVE_FILE"
                                 elif echo "\$FILE_TYPE" | grep -q "gzip compressed"; then
                                     ARCHIVE_FILE="BUILD_ARCHIVE.tar.gz"
                                     mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                    echo "✅ 检测为TAR.GZ文件，重命名为: \$ARCHIVE_FILE"
+                                    echo "✅ Detected as TAR.GZ file, renamed to: \$ARCHIVE_FILE"
                                 elif echo "\$FILE_TYPE" | grep -q "POSIX tar archive"; then
                                     ARCHIVE_FILE="BUILD_ARCHIVE.tar"
                                     mv BUILD_ARCHIVE "\$ARCHIVE_FILE"
-                                    echo "✅ 检测为TAR文件，重命名为: \$ARCHIVE_FILE"
+                                    echo "✅ Detected as TAR file, renamed to: \$ARCHIVE_FILE"
                                 else
                                     ARCHIVE_FILE="BUILD_ARCHIVE"
-                                    echo "⚠️  无法识别文件类型，使用默认名称: \$ARCHIVE_FILE"
+                                    echo "⚠️  Unable to recognize file type, using default name: \$ARCHIVE_FILE"
                                 fi
                             fi
                             
-                            echo "最终使用的文件名: \$ARCHIVE_FILE"
+                            echo "Final filename used: \$ARCHIVE_FILE"
                             echo "ARCHIVE_FILE=\$ARCHIVE_FILE" > archive_info.env
                         """
                         
-                        // 读取文件名信息
+                        // Read filename information
                         def archiveInfo = readFile('archive_info.env').trim()
                         def archiveFile = archiveInfo.split('=')[1]
                         env.ACTUAL_ARCHIVE_FILE = archiveFile
                         
-                        echo "确定的归档文件: ${env.ACTUAL_ARCHIVE_FILE}"
+                        echo "Determined archive file: ${env.ACTUAL_ARCHIVE_FILE}"
                         
-                        // 检测文件类型并解压 - 使用 Pipeline Utility Steps
+                        // Detect file type and extract - using Pipeline Utility Steps
                         script {
                             def uploadedArchive = env.ACTUAL_ARCHIVE_FILE
                             
-                            echo "📋 文件信息:"
+                            echo "📋 File information:"
                             sh "ls -lh '${uploadedArchive}'"
                             
-                            echo "📂 开始解压文件: ${uploadedArchive}"
+                            echo "📂 Starting to extract file: ${uploadedArchive}"
                             
-                            // 根据文件扩展名使用适当的 Pipeline Utility Steps
+                            // Use appropriate Pipeline Utility Steps based on file extension
                             try {
                                 if (uploadedArchive.endsWith('.zip')) {
-                                    echo "使用 Pipeline Utility Steps unzip 解压 ZIP 文件"
+                                    echo "Using Pipeline Utility Steps unzip to extract ZIP file"
                                     unzip zipFile: uploadedArchive, quiet: false
-                                    echo "✅ ZIP 文件解压完成"
+                                    echo "✅ ZIP file extraction completed"
                                 } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                    echo "使用 Pipeline Utility Steps untar 解压 TAR.GZ 文件"
+                                    echo "Using Pipeline Utility Steps untar to extract TAR.GZ file"
                                     untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                    echo "✅ TAR.GZ 文件解压完成"
+                                    echo "✅ TAR.GZ file extraction completed"
                                 } else if (uploadedArchive.endsWith('.tar')) {
-                                    echo "使用 Pipeline Utility Steps untar 解压 TAR 文件"
+                                    echo "Using Pipeline Utility Steps untar to extract TAR file"
                                     untar file: uploadedArchive, quiet: false
-                                    echo "✅ TAR 文件解压完成"
+                                    echo "✅ TAR file extraction completed"
                                 } else {
-                                    echo "⚠️  未知文件格式，尝试通用解压方法"
-                                    // 先尝试作为 ZIP 文件
+                                    echo "⚠️  Unknown file format, trying generic extraction methods"
+                                    // Try as ZIP file first
                                     try {
-                                        echo "尝试按 ZIP 格式解压"
+                                        echo "Trying to extract as ZIP format"
                                         unzip zipFile: uploadedArchive, quiet: false
-                                        echo "✅ 按 ZIP 格式解压成功"
+                                        echo "✅ Successfully extracted as ZIP format"
                                     } catch (Exception zipEx) {
-                                        echo "ZIP 解压失败，尝试按 TAR 格式解压"
+                                        echo "ZIP extraction failed, trying TAR format"
                                         try {
                                             untar file: uploadedArchive, quiet: false
-                                            echo "✅ 按 TAR 格式解压成功"
+                                            echo "✅ Successfully extracted as TAR format"
                                         } catch (Exception tarEx) {
-                                            echo "TAR 解压失败，尝试按 TAR.GZ 格式解压"
+                                            echo "TAR extraction failed, trying TAR.GZ format"
                                             untar file: uploadedArchive, compression: 'gzip', quiet: false
-                                            echo "✅ 按 TAR.GZ 格式解压成功"
+                                            echo "✅ Successfully extracted as TAR.GZ format"
                                         }
                                     }
                                 }
                             } catch (Exception e) {
-                                echo "❌ Pipeline Utility Steps 解压失败: ${e.getMessage()}"
-                                echo "回退到传统方法解压..."
+                                echo "❌ Pipeline Utility Steps extraction failed: ${e.getMessage()}"
+                                echo "Falling back to traditional extraction methods..."
                                 
-                                // 回退到传统命令行解压
+                                // Fallback to traditional command line extraction
                                 if (uploadedArchive.endsWith('.zip')) {
-                                    echo "使用 Python 解压 ZIP 文件"
+                                    echo "Using Python to extract ZIP file"
                                     sh '''
                                         python3 -c "
 import zipfile
@@ -198,109 +198,109 @@ import sys
 try:
     with zipfile.ZipFile('${uploadedArchive}', 'r') as zip_ref:
         zip_ref.extractall('.')
-    print('✅ Python ZIP 解压成功')
+    print('✅ Python ZIP extraction successful')
 except Exception as e:
-    print(f'❌ Python ZIP 解压失败: {e}')
+    print(f'❌ Python ZIP extraction failed: {e}')
     sys.exit(1)
                                     "
                                 '''
                                 } else if (uploadedArchive.endsWith('.tar.gz') || uploadedArchive.endsWith('.tgz')) {
-                                    echo "使用 tar 解压 TAR.GZ 文件"
+                                    echo "Using tar to extract TAR.GZ file"
                                     sh "tar -xzf '${uploadedArchive}'"
                                 } else if (uploadedArchive.endsWith('.tar')) {
-                                    echo "使用 tar 解压 TAR 文件"
+                                    echo "Using tar to extract TAR file"
                                     sh "tar -xf '${uploadedArchive}'"
                                 }
                             }
                             
-                            echo "📁 解压后工作空间内容:"
+                            echo "📁 Workspace contents after extraction:"
                             sh "ls -la"
                         }
                         
-                        // 验证构建目录和文件是否存在
+                        // Verify build directory and files exist
                         sh """
                             if [ ! -d "${BUILD_CONTEXT_PATH}" ]; then
-                                echo "❌ 错误: 构建目录 ${BUILD_CONTEXT_PATH} 不存在"
-                                echo "📁 当前目录内容:"
+                                echo "❌ Error: Build directory ${BUILD_CONTEXT_PATH} does not exist"
+                                echo "📁 Current directory contents:"
                                 find . -type d -maxdepth 2
                                 exit 1
                             fi
                             
                             if [ ! -f "${DOCKERFILE_PATH}" ]; then
-                                echo "❌ 错误: Dockerfile ${DOCKERFILE_PATH} 不存在"
-                                echo "📁 构建目录内容:"
+                                echo "❌ Error: Dockerfile ${DOCKERFILE_PATH} does not exist"
+                                echo "📁 Build directory contents:"
                                 ls -la ${BUILD_CONTEXT_PATH}/
                                 exit 1
                             fi
                             
-                            echo "✅ 构建文件验证通过"
-                            echo "📁 构建目录内容:"
+                            echo "✅ Build file verification passed"
+                            echo "📁 Build directory contents:"
                             ls -la ${BUILD_CONTEXT_PATH}/
                         """
 
-                        echo "🔧 构建准备阶段"
+                        echo "🔧 Build preparation stage"
                         
-                        // 处理唯一ID - 通常由Python脚本生成并传递
+                        // Handle unique ID - usually generated and passed by Python script
                         def uniqueId = params.BUILD_UNIQUE_ID
                         if (!uniqueId || uniqueId.trim().isEmpty()) {
                             uniqueId = "${new Date().format('yyyyMMddHHmmss')}-${BUILD_NUMBER}-${UUID.randomUUID().toString().substring(0, 8)}"
-                            echo "📋 Jenkins生成唯一ID: ${uniqueId}"
+                            echo "📋 Jenkins generated unique ID: ${uniqueId}"
                         } else {
-                            echo "📋 使用传递的唯一ID: ${uniqueId}"
+                            echo "📋 Using passed unique ID: ${uniqueId}"
                         }
                         env.ACTUAL_UNIQUE_ID = uniqueId
                         
-                        // 处理平台配置
+                        // Handle platform configuration
                         def platformsStr = params.BUILD_PLATFORMS
-                        echo "🔍 原始平台参数: '${platformsStr}'"
+                        echo "🔍 Original platform parameter: '${platformsStr}'"
                         
                         def platforms = platformsStr.split(',')
                         def platformsInfo = []
                         
-                        echo "🏗️  多平台构建配置:"
-                        echo "   选择的平台: ${platformsStr}"
-                        echo "   分割后平台数量: ${platforms.length}"
+                        echo "🏗️  Multi-platform build configuration:"
+                        echo "   Selected platforms: ${platformsStr}"
+                        echo "   Number of platforms after split: ${platforms.length}"
                         
                         for (platform in platforms) {
                             def cleanPlatform = platform.trim()
                             platformsInfo.add(cleanPlatform)
-                            echo "   - 平台: '${cleanPlatform}'"
+                            echo "   - Platform: '${cleanPlatform}'"
                         }
                         
                         env.PLATFORM_LIST = platformsInfo.join(',')
                         env.IS_MULTI_PLATFORM = (platforms.length > 1).toString()
                         
-                        echo "🔍 环境变量设置:"
+                        echo "🔍 Environment variable settings:"
                         echo "   PLATFORM_LIST: '${env.PLATFORM_LIST}'"
                         echo "   IS_MULTI_PLATFORM: '${env.IS_MULTI_PLATFORM}'"
                         
-                        echo "📋 构建配置信息:"
-                        echo "   应用名称: ${params.APP_NAME}"
-                        echo "   应用版本: ${params.APP_VERSION}" 
-                        echo "   构建唯一ID: ${uniqueId}"
-                        echo "   镜像名称: ${IMAGE_NAME}"
-                        echo "   镜像标签: ${IMAGE_TAG}"
-                        echo "   Harbor 仓库: ${HARBOR_REGISTRY}"
-                        echo "   项目: ${HARBOR_PROJECT}"
-                        echo "   构建平台: ${env.PLATFORM_LIST}"
-                        echo "   多平台构建: ${env.IS_MULTI_PLATFORM}"
+                        echo "📋 Build configuration information:"
+                        echo "   Application name: ${params.APP_NAME}"
+                        echo "   Application version: ${params.APP_VERSION}" 
+                        echo "   Build unique ID: ${uniqueId}"
+                        echo "   Image name: ${IMAGE_NAME}"
+                        echo "   Image tag: ${IMAGE_TAG}"
+                        echo "   Harbor registry: ${HARBOR_REGISTRY}"
+                        echo "   Project: ${HARBOR_PROJECT}"
+                        echo "   Build platforms: ${env.PLATFORM_LIST}"
+                        echo "   Multi-platform build: ${env.IS_MULTI_PLATFORM}"
                         
-                        // 显示构建信息
+                        // Display build information
                         sh """
-                            echo "=== 构建信息 ==="
-                            echo "构建号: ${BUILD_NUMBER}"
-                            echo "构建唯一ID: ${uniqueId}"
-                            echo "构建时间: \$(date)"
-                            echo "构建节点: \$(hostname)"
+                            echo "=== Build Information ==="
+                            echo "Build number: ${BUILD_NUMBER}"
+                            echo "Build unique ID: ${uniqueId}"
+                            echo "Build time: \$(date)"
+                            echo "Build node: \$(hostname)"
                             echo "Jenkins URL: ${JENKINS_URL}"
-                            echo "原始文件名: \${BUILD_ARCHIVE_FILENAME:-'未设置'}"
-                            echo "实际使用文件: ${env.ACTUAL_ARCHIVE_FILE}"
-                            echo "构建平台: ${env.PLATFORM_LIST}"
-                            echo "多平台模式: ${env.IS_MULTI_PLATFORM}"
+                            echo "Original filename: \${BUILD_ARCHIVE_FILENAME:-'Not set'}"
+                            echo "Actually used file: ${env.ACTUAL_ARCHIVE_FILE}"
+                            echo "Build platforms: ${env.PLATFORM_LIST}"
+                            echo "Multi-platform mode: ${env.IS_MULTI_PLATFORM}"
                         """
 
                         echo "📦 Stashing build context for parallel stages..."
-                        echo "📁 验证要stash的目录内容:"
+                        echo "📁 Verifying directory contents to stash:"
                         sh "ls -la ${params.BUILD_CONTEXT}/"
                         stash includes: "${params.BUILD_CONTEXT}/**", name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                     }
@@ -308,19 +308,19 @@ except Exception as e:
             }
         }
 
-        stage("多平台镜像构建") {
+        stage("Multi-platform Image Build") {
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
-                    echo "🚀 开始构建 ${platforms.length} 个平台: ${env.PLATFORM_LIST}"
+                    echo "🚀 Starting to build ${platforms.length} platforms: ${env.PLATFORM_LIST}"
                 }
             }
         }
         
-        stage("并行构建执行") {
+        stage("Parallel Build Execution") {
             failFast true
             parallel {
-                stage('构建 AMD64') {
+                stage('Build AMD64') {
                     when {
                         expression { 
                             return env.PLATFORM_LIST.contains('linux/amd64')
@@ -359,7 +359,7 @@ spec:
                     }
                     steps {
                         script {
-                            echo "🖥️  构建 AMD64 镜像"
+                            echo "🖥️  Building AMD64 image"
                             echo "📦 Unstashing build context..."
                             unstash name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                             container('kaniko') {
@@ -369,12 +369,12 @@ spec:
                     }
                     post {
                         failure {
-                            echo "❌ AMD64 失败"
+                            echo "❌ AMD64 failed"
                         }
                     }
                 }
                 
-                stage('构建 ARM64') {
+                stage('Build ARM64') {
                     when {
                         expression { 
                             return env.PLATFORM_LIST.contains('linux/arm64')
@@ -413,7 +413,7 @@ spec:
                     }
                     steps {
                         script {
-                            echo "💪 构建 ARM64 镜像"
+                            echo "💪 Building ARM64 image"
                             echo "📦 Unstashing build context..."
                             unstash name: "build-context-${env.ACTUAL_UNIQUE_ID}"
                             container('kaniko') {
@@ -423,14 +423,14 @@ spec:
                     }
                     post {
                         failure {
-                            echo "❌ ARM64 失败"
+                            echo "❌ ARM64 failed"
                         }
                     }
                 }
             }
         }
 
-        stage("构建结果汇总") {
+        stage("Build Results Summary") {
             steps {
                 script {
                     def platforms = env.PLATFORM_LIST.split(',')
@@ -443,9 +443,9 @@ spec:
                         }
                     }
                     
-                    echo "📊 构建完成: ${params.APP_NAME}:${IMAGE_TAG} (${builtPlatforms.size()}平台)"
+                    echo "📊 Build completed: ${params.APP_NAME}:${IMAGE_TAG} (${builtPlatforms.size()} platforms)"
                     echo ""
-                    echo "🎯 构建的镜像:"
+                    echo "🎯 Built images:"
                     
                     for (platform in builtPlatforms) {
                         def platformArch = platform.replace('linux/', '')
@@ -463,7 +463,7 @@ spec:
     post {
         always {
             script {
-                echo "🧹 构建完成 - 编号: ${BUILD_NUMBER}"
+                echo "🧹 Build completed - Number: ${BUILD_NUMBER}"
             }
         }
         success {
@@ -478,19 +478,19 @@ spec:
                     }
                 }
                 
-                echo "🎉 构建成功 - ${params.APP_NAME}:${IMAGE_TAG}"
-                echo "✅ 平台: ${builtPlatforms.join(', ')}"
+                echo "🎉 Build successful - ${params.APP_NAME}:${IMAGE_TAG}"
+                echo "✅ Platforms: ${builtPlatforms.join(', ')}"
             }
         }
         failure {
             script {
-                echo "❌ 构建失败 - ${params.APP_NAME}:${IMAGE_TAG}"
+                echo "❌ Build failed - ${params.APP_NAME}:${IMAGE_TAG}"
             }
         }
     }
 }
 
-// 生成镜像标签的函数
+// Function to generate image tag
 def generateImageTag() {
     def strategy = params.IMAGE_TAG_STRATEGY ?: 'version-build'
     
@@ -506,21 +506,21 @@ def generateImageTag() {
     }
 }
 
-// 解析平台列表的函数
+// Function to parse platform list
 def parsePlatforms(platformsStr) {
     return platformsStr.split(',').collect { it.trim() }.join(',')
 }
 
-// 构建指定平台镜像的函数
+// Function to build image for specified platform
 def buildPlatformImage(String platform, String platformArch) {
     sh """#!/busybox/sh
-        # 验证文件
+        # Verify files
         if [ ! -f "${DOCKERFILE_PATH}" ]; then
-            echo "❌ Dockerfile 不存在: ${DOCKERFILE_PATH}"
+            echo "❌ Dockerfile does not exist: ${DOCKERFILE_PATH}"
             exit 1
         fi
         
-        # 执行构建
+        # Execute build
         /kaniko/executor \\
             --dockerfile=${DOCKERFILE_PATH} \\
             --context=${BUILD_CONTEXT_PATH} \\
@@ -533,4 +533,4 @@ def buildPlatformImage(String platform, String platformArch) {
             --cache-ttl=24h \\
             --cleanup
     """
-} 
+}
